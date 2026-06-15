@@ -1,0 +1,148 @@
+,
+,Example 1：
+,"Power-on parameter screen (0X0800-0X083F) Actual telegram write data:                                
+01 10 08 00 00 40 80 00 30 00 64 00 3C 00 09 15 5F 10 F3 13 92 12 8E 15 5F 10 F3 13 92 12 8E FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF E8 A6                       
+Write answer: 01 10 08 00 00 40 C3 99  
+The write command is parsed as follows:                                                    
+01 10 means the device address is 01 and function code 10 is written to the function        
+08 00 indicates the start address of the interface register               
+00 40 means that 64 registers are written (in hex)         
+80 means that a total of 128 bytes of data are written                    
+00 30 means 08 00 address register written for a value of 48 seconds        
+00 64 means that the 08 01 address register is written at a value of 100 rise rate
+00 3C means that the 08 02 address register has a parallel wait time of 60s    
+The following data parsing are analogous, a register accounts for two bytes of storage space, data parsing are hexadecimal, undefined registers are all written 1, that is, all set to FF FF, the last two bytes E8 A6 for CRC check code.                                       
+Write-to-answer parsing:                                   
+01 10 means set address is 01, function code is 10            
+08 00 means the start address of the interface register                  
+00 40 means that 64 registers are written                   
+C3 99 means CRC check digit   
+"
+,Example 2：
+,"Power-on parameter interface (0X0800-0X083F) actual test message
+Reading data:   
+01 03 08 00 00 40 46 5A                                                 
+Read the answer：                                       
+01 03 80 00 30 00 64 00 3C 00 09 15 5F 10 F3 13 92 12 8E 15 5F 10 F3 13 92 12 8E FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 75 E8
+Explanation of read command:                                     
+01 03 indicates the device address 01 and function code 03 read function              
+08 00 indicates the start address of the read interface register                
+00 40 indicates the number of registers to be read                   
+46 5A indicates CRC check digit         
+                 
+Read answer parsing:                               
+01 03 indicates device address and function code.
+80 means 128 bytes read 00 30 means 08 00 address register read             
+00 64 means 08 01 address register read data             
+00 3C means 08 02 address register read data                  
+In turn, two bytes correspond to one register analogously, the full value of the undefined register is FF FF corresponding to the write, 75 E8 is the CRC check code.
+
+Waiting time before grid connection (0X0800) is set to 60s                         
+Actual message write sent: 01 10 08 00 00 01 02 00 3C 2F 81      
+Answer 1: 01 10 08 00 00 01 03 A9      
+              
+Read transmission of the actual message: 01 03 08 00 00 01 86 6A           
+Answer 2: 01 03 02 00 3C B8 55                       
+Note: The single function registers in this interface can all be written and read, similar to the waiting time before grid connection, by setting the address to correspond to the data range."
+,Example 3：
+,"Crypto, GFCI, ISO parameter interface (0x0A00-0x0A3F) Write command: 
+01 10 0A 00 00 40 80 00 01 00 01 00 03 00 14 00 32 00 00 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF F7 8E                        
+Write answer: 01 10 0A 00 00 40 C2 21                  
+Write command according to the analysis:                                                    
+01 10 means the device address is 01, function code 10 write function         
+0A 00 indicates the start address of the interface register                         
+00 40 means that 64 registers (in hex) are written               
+80 means that a total of 128 bytes of data are written                           
+00 01 means that the 0A 00 address register is written with a value of 1 (0000 0001), opening the orphan enable register, the low byte binary case corresponds to the enable bit.                                   
+00 01 indicates that the 0A 01 address register is written with a value of 1, opening the GFCI enable.                                     
+00 03 means that the 0A 02 address register is written to a value of 3, which turns on the insulation impedance enable and the ground detection enable.                                                                                                                 The following data parsing are analogous, a register accounts for two bytes of storage space, data parsing are hexadecimal, undefined registers are all written 1, that is, all set to FF FF, the last two bytes F7 8E for CRC check code.                                                           
+Write-to-answer parsing:                                   
+01 10 means set address is 01, function code is 10            
+0A 00 indicates the start address of the interface register                  
+00 40 means that 64 registers are written                   
+C2 21 means CRC check digit                            "
+,Example 4：
+,"Crypto, GFCI, ISO parameter interface (0x0A00-0x0A3F) Read commands:   
+01 03 0A 00 00 40 47 E2                            
+read answer：                                           
+01 03 80 00 01 00 01 00 03 00 14 00 32 00 00 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 4F A0                                   
+This interface register can also be read or written for a single register function, and the operation process is similar to that of
+Read instruction parsing:                                     
+01 03 indicates the device address 01 and function code 03 read function              
+0A 00 indicates the start address of the read interface register                
+00 40 indicates the number of registers to be read                   
+47 E2 indicates the CRC check digit                          
+Read Answer Explanation:                               
+01 03 indicates device address and function code, 80 indicates 128 bytes read 00 01 indicates 0A 00 address register read data                        
+00 01 means 0A 01 address register read data            
+00 03 means 0A 02 address register read data                             
+In turn, two bytes correspond to a register analogy, the full value of the undefined register is FF FF and write correspondence, 4F A0 is CRC check code.
+
+Set the insulation impedance protection value to 50K.                         
+Write instruction: 01 10 0A 03 00 01 02 00 32 8D B6               
+Answer: 01 10 0A 03 00 01 F2 11  
+                       
+Read command: 01 03 0A 03 00 01 77 D2                         
+Answer: 01 03 02 00 32 39 91"
+,Example 5:
+,"1. Read:
+// Multi-register reads: 0x40 (64) register values are read from address 0x1000.
+// Reads of arbitrary length and address are supported within the block address (0x1000 to 0x0103F)发：01 03 10 00 00 40 40 FA 
+receive：01 03 80 41 FF 63 FE 00 1E FF FF 00 16 00 0C 00 07 00 0A 00 2B 00 25 00 00 00 01 00 01 00 00 00 00 00 00 00 00 00 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 01 00 05 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 B0 3E 
+Receiving Analysis：80：A total of 0x80 bytes of data was read。
+41 FF: Data at address 0x1000. Represents validity of addresses 0x1030 to 0x103F
+63 FE: Data at address 0x1001. Represents validity of addresses 0x1020 to 0x102F
+00 1E: Data for address 0x1002. Valid for representing addresses 0x1010 to 0x101F
+FF FF: Data for address 0x1003. Represents validity of addresses 0x1000 to 0x100F
+00 16: Data for address 0x1004. 22 years
+00 0C: Data for address 0x1005. 12 months
+00 07: Data for address 0x1006. 7 days
+00 0A: Data for address 0x1007. 10 points
+00 2B: Data for address 0x1008. 43 pts
+00 25: Data for address 0x1009. 37 sec.
+00 00: Data for address 0x100A. 00 00: Data for address 0x100A. Last write time operation successful
+00 01: Data at address 0x100B. RS485 address is 1
+00 01: Data at address 0x100C. Bit rate is 9600
+00 00: Data at address 0x100D. Stop bit is 1
+00 00: Data for address 0x100E. No parity bit
+00 00: Data at address 0x100F. Last write to RS485 configuration successful
+00 00: Data at address 0x1010. PV input mode is parallel
+00 80: Data at address 0x1011. Input channel 0 is battery input
+00 00: Data at address 0x1012. Input channel 1 is not used
+00 00: Data at address 0x1013. Input channel 2 is  no   tused                                                                                                                       00 00: Data at address 0x1020. Input channel 15 is not used
+00 00: Data at address 0x1021. Last operation on input channel successful
+00 00: Data at address 0x1022. Last reading of safety parameters from USB stick successful
+00 01: Data at address 0x1023. Anti-backflow set to default mode
+00 00: Data at address 0x1024. Anti-backflow power set to 0
+00 01: Data at address 0x1025. IV scan enabled
+00 05: Data for address 0x1026. IV scan period is 5 minutes
+00 00: Data at address 0x1027. Last operation IV scan successful
+00 00: Data at address 0x1028. IV curve value passed to PV0
+00 00: Data at address 0x1029. Turn off emergency power enable
+00 02: Data at address 0x102A. Emergency power supply start wait 2s
+00 00: Data at address 0x102B. Disable automatic battery activation
+00 00: Data at address 0x102C. Last automatic battery activation command successful
+00 00: Data at address 0x102D. Last CT auto-calibration operation successful
+00 00: Data at address 0x102E. Last Italian automatic test operation successful
+00 00: Data at address 0x102F. Blank
+00 00: Data at address 0x1030. Electricity statistics for the first 0 years of the current year score
+00 00: Data at address 0x1031. Power statistics for the first 0 months of the current month division
+00 00: Data at address 0x1032. Power statistics for the previous 0 days of the current day
+00 00: Data for address 0x1033. Invalid data
+00 00: Data for address 0x1034. Inverter language is Chinese
+00 00: Data for address 0x1035. Disable parallel function
+00 01: Data at address 0x1036. Local machine set to host
+00 00: Data at address 0x1037. Local parallel address is 0
+00 01: Data at address 0x1038. Enable unbalance support
+00 00: Data for address 0x1039. Generating power multiplier of 0
+00 00: Data for address 0x103A. Buy power multiplier is 0
+00 00: Data at address 0x103B. Sell power multiplier is 0
+00 00: Data for address 0x103C. Charge power multiplier of 0
+00 00: Data at address 0x103D. Discharge quantity multiplier is 0
+00 00: Data at address 0x103E. Logic interface control disabled
+00 00: Data at address 0x103F. Blank
+
+// Single register read: supports any read within addresses 0x1000 to 0x103F
+Send: 01 03 10 04 00 01 C1 0B 
+Receive: 01 03 02 00 16 39 8A
+Receive resolution: 0x0016 for address 0x1004, current year is 2000 + 0x0016 = 2022"

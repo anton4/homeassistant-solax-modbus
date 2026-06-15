@@ -1,0 +1,42 @@
+,Write Format,,,,,,,,,,,,,
+,Device Address,Function Code,Start Address,,Write Register No.,,Write Byte No.,Data to write in,,,,,CRC,
+,1 Byte,1 Byte,Hi Byte,Low Byte,Hi Byte,Low Byte,1 Byte,Hi Byte 1,Low Byte 1,…,Hi Byte N,Low Byte N,Low Byte,Hi Byte
+,"Broadcast Address:0x00;
+Device Address:1-247",Write Function Code:0x10,,,,,,"For 32bits or 64bit data, it will be sent by Big-endian  mode if there is no special explanation.
+For example, sequence to send a 32bits data:
+byte3, byte2, byte1, byte0",,,,,Modbus-CRC16,
+,Response Format of Write,,,,,,,,,,,,,
+,Device Address,Function Code,Start Address,,Write Register No.,,CRC ,,,,,,,
+,1 Byte,1 Byte,Hi Byte,Low Byte,Hi Byte,Low Byte,Low Byte,Hi Byte,,,,,,
+,"Slave Address
+",Write Function Code:0x10,,,,,Modbus-CRC16,,,,,,,
+,Read Format,,,,,,,,,,,,,
+,Device Address,Function Code,Start Address,,Read Register No.,,CRC ,,,,,,,
+,1 Byte,1 Byte,Hi Byte,Low Byte,Hi Byte,Low Byte,Low Byte,Hi Byte,,,,,,
+,"Device Address:1-247
+",ReadFunction Code:0x03,,,,,Modbus-CRC16,,,,,,,
+,Response Format of Read,,,,,,,,,,,,,
+,Device Address,Function Code,Data Byte No.,Response register data,,,,,CRC ,,,,,
+,1 Byte,1 Byte,1 Byte,Hi Byte 1,Low Byte 1,…,Hi Byte N,Low Byte N,Low Byte,Hi Byte,,,,
+,"Slave Address
+", ReadFunction Code:0x03,,"For 32bits or 64bit data, it will be sent by Big-endian  mode if there is no special explaination.
+For example , sequence to send a 32bits data:
+byte3,byte2,byte1,byte0",,,,,Modbus-CRC16,,,,,
+,Abnormal Response,,,,,,,,,,,,,
+,Device Address,Function Code,Error Code,,CRC,,,,,,,,,
+,1 Byte,1 Byte,1 Byte,,Low Byte,Hi Byte,,,,,,,,
+,"Slave Address
+",Abnormal Function Code:0x90,See Error Code List,,Modbus-CRC16,,,,,,,,,
+,Error code,,,,,,,,,,,,,
+,value,Notes,,,,,,,,,,,,
+,1,Illegal function,,,,,,,,,,,,
+,2,Invalid data address,,,,,,,,,,,,
+,3,Invalid data value,,,,,,,,,,,,
+,4,Slave equipment failure,,,,,,,,,,,,
+,7,Busy with slave equipment,,,,,,,,,,,,
+,,,,,,,,,,,,,,
+,Read and write explanation,,,,,,,,,,,,,
+,Value,Name, Explanation,,,,,,,,,,,
+,R,Readable,Readable registers,,,,,,,,,,,
+,W,Writable,Writable registers,,,,,,,,,,,
+,V,Volatile,"Variable registers, support frequent write operations",,,,,,,,,,,
