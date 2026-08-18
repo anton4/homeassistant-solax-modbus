@@ -2,6 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from time import time
 from typing import Any
 
 from homeassistant.components.number import NumberDeviceClass
@@ -20,6 +21,7 @@ from homeassistant.const import (
 from homeassistant.helpers.entity import EntityCategory  # type: ignore[attr-defined]  # HA stubs incomplete
 
 from custom_components.solax_modbus.const import (  # type: ignore[attr-defined]  # UnitOfReactivePower conditional import
+    BUTTONREPEAT_POST,
     CONF_READ_DCB,
     CONF_READ_EPS,
     CONF_READ_PM,
@@ -44,6 +46,8 @@ from custom_components.solax_modbus.const import (  # type: ignore[attr-defined]
     BaseModbusSelectEntityDescription,
     BaseModbusSensorEntityDescription,
     UnitOfReactivePower,
+    autorepeat_remaining,
+    autorepeat_stop,
     base_battery_config,
     plugin_base,
     value_function_2byte_timestamp,
@@ -184,6 +188,117 @@ def value_function_passivemode(initval: Any, descr: Any, datadict: dict[str, Any
         (REGISTER_S32, datadict.get("passive_mode_battery_power_min", 0)),
         (REGISTER_S32, datadict.get("passive_mode_battery_power_max", 0)),
     ]
+
+
+# ---------------------------------------------------------------------------------------------------
+# Remote power control - the RWV block 0x1105-0x110C
+#
+# These are the only registers in the whole Sofar G3 protocol flagged "V" (volatile):
+# "Variable registers, support frequent write operations". They may be written continuously without
+# the EEPROM-wear concern that applies to the plain RW registers (feed-in limitation 0x1023/0x1024,
+# passive mode 0x1187-0x118C, TOU/timing which explicitly persist to EEPROM).
+#
+# They are LIMITS (% of rated power), not setpoints: they cap what the inverter may import/export,
+# they cannot command a grid power target or a battery power window. The passive mode entities remain
+# the only way to do that and are deliberately left untouched as the fallback path.
+#
+# Unlike passive mode there is NO inverter-side watchdog on this block, so a 0 % limit would persist
+# forever if Home Assistant stopped. The autorepeat window below is the fail-safe: when it expires the
+# BUTTONREPEAT_POST call clears the enable bits and restores both limits to 100 %.
+# ---------------------------------------------------------------------------------------------------
+
+REMOTE_POWER_CONTROL_OPTIONS: dict[int, str] = {
+    0: "Disabled",
+    1: "Active Power Control",  # 0x1105 bit0
+    3: "Active + Reactive Power",  # bit0 | bit1
+    7: "Active + Reactive (Power Factor)",  # bit0 | bit1 | bit2 (reactive mode = power factor)
+}
+
+REMOTE_POWER_WRITE_MODES: dict[int, str] = {
+    0: "Short (0x1105-0x1107)",
+    1: "Full (0x1105-0x110C)",
+}
+
+REMOTE_POWER_LIMIT_MAX = 1000  # 100.0 % in 0.1 % register units
+
+
+def _remote_power_option_value(datadict: dict[str, Any], key: str, options: dict[int, str], default: int = 0) -> int:
+    """Resolve a WRITE_DATA_LOCAL select, which holds the option label once set but initvalue while unset."""
+    value = datadict.get(key, default)
+    if isinstance(value, str):
+        for optval, label in options.items():
+            if label == value:
+                return optval
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _remote_power_limit(datadict: dict[str, Any], watt_key: str, percent_key: str) -> int:
+    """Return a 0x1106/0x1107 limit in 0.1 % register units.
+
+    The Watt entity wins whenever it is >= 0 and the inverter power rating (0x06ED) is known;
+    a negative value means "not used, take the percentage entity instead".
+    """
+    watts = datadict.get(watt_key)
+    rated_kw = datadict.get("ratedpower_inverter") or 0
+    percent = 0.0
+    if watts is not None and float(watts) >= 0:
+        if float(rated_kw) > 0:
+            percent = 100.0 * float(watts) / (float(rated_kw) * 1000.0)
+        else:
+            _LOGGER.warning(f"Sofar remote power: no inverter power rating available, ignoring {watt_key} and using {percent_key}")
+            percent = float(datadict.get(percent_key) or 0)
+    else:
+        percent = float(datadict.get(percent_key) or 0)
+    return max(0, min(REMOTE_POWER_LIMIT_MAX, round(percent * 10)))
+
+
+def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: dict[str, Any]) -> dict[str, Any]:
+    """Build the atomic write for the RWV remote power control block starting at 0x1105.
+
+    initval is BUTTONREPEAT_FIRST on the manual button press, BUTTONREPEAT_LOOP on every repeat
+    while the autorepeat window is open, and BUTTONREPEAT_POST once when it expires.
+    """
+    release = initval == BUTTONREPEAT_POST
+    bits = 0 if release else _remote_power_option_value(datadict, "remote_power_control_mode", REMOTE_POWER_CONTROL_OPTIONS)
+
+    if bits == 0:  # nothing enabled: hand control back to the inverter with both limits wide open
+        export_limit = REMOTE_POWER_LIMIT_MAX
+        import_limit = REMOTE_POWER_LIMIT_MAX
+    else:
+        export_limit = _remote_power_limit(datadict, "remote_power_export_limit_w", "remote_power_export_limit_pct")
+        import_limit = _remote_power_limit(datadict, "remote_power_import_limit_w", "remote_power_import_limit_pct")
+
+    data: list[tuple[Any, Any]] = [
+        (REGISTER_U16, bits),  # 0x1105 Power_Control
+        (REGISTER_U16, export_limit),  # 0x1106 Active_Power_Export_Limit
+        (REGISTER_U16, import_limit),  # 0x1107 Active_Power_Import_Limit
+    ]
+
+    # The protocol note for this block is ambiguous about partial writes ("the first address is fixed to
+    # any address within this range, and the length is the length of the range"). If the inverter rejects
+    # the 3 register write, "Full" re-sends 0x1108-0x110C from the read-back values so nothing changes there.
+    if _remote_power_option_value(datadict, "remote_power_write_mode", REMOTE_POWER_WRITE_MODES) == 1:
+        data += [
+            (REGISTER_S16, round(float(datadict.get("reactive_power_setting") or 0) * 10)),  # 0x1108
+            (REGISTER_S16, round(float(datadict.get("power_factor_setting") or 0) * 100)),  # 0x1109
+            (REGISTER_U16, max(1, min(65535, int(datadict.get("remote_power_limit_speed") or 1)))),  # 0x110A
+            (REGISTER_U16, round(float(datadict.get("reactive_power_response_time") or 0) * 10)),  # 0x110B
+            (REGISTER_S16, round(float(datadict.get("svg_fixed_reactive_power") or 0) * 10)),  # 0x110C
+        ]
+
+    if bits == 0 and not release:  # user selected Disabled: stop repeating, the write above already released
+        autorepeat_stop(datadict, "remote_power_control_trigger")
+
+    _LOGGER.debug(f"Sofar remote power control: initval={initval} bits={bits} export={export_limit} import={import_limit} data={data}")
+    return {"action": WRITE_MULTI_MODBUS, "register": 0x1105, "data": data}
+
+
+def value_function_remote_power_autorepeat_remaining(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
+    return autorepeat_remaining(datadict, "remote_power_control_trigger", time())
 
 
 def value_function_passive_timeout(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
@@ -357,6 +472,23 @@ BUTTON_TYPES = [
             "passive_mode_timeout_action",
         ],
     ),
+    SofarModbusButtonEntityDescription(
+        name="Remote: Update Power Limits",
+        key="remote_power_control_trigger",
+        register=0x1105,
+        allowedtypes=HYBRID | PV | AC,
+        write_method=WRITE_MULTI_MODBUS,
+        icon="mdi:remote",
+        autorepeat="remote_power_autorepeat_duration",
+        value_function=autorepeat_function_sofar_power_control,
+        depends_on=[
+            "ratedpower_inverter",
+            "reactive_power_setting",
+            "power_factor_setting",
+            "reactive_power_response_time",
+            "svg_fixed_reactive_power",
+        ],
+    ),
     # Unlikely to work as Sofar requires writing 7 registers, where the last needs to have the constant value of '1' during a write operation.
     SofarModbusButtonEntityDescription(
         name="Update System Time",
@@ -522,6 +654,101 @@ NUMBER_TYPES = [
         icon="mdi:transmission-tower-import",
     ),
     SofarModbusNumberEntityDescription(
+        name="Remote: Export Power Limit",
+        key="remote_power_export_limit_w",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=NumberDeviceClass.POWER,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=-1,
+        native_max_value=100000,
+        native_step=1,
+        initvalue=-1,
+        display_as_box=True,
+        allowedtypes=HYBRID | PV | AC,
+        prevent_update=True,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:transmission-tower-export",
+    ),
+    SofarModbusNumberEntityDescription(
+        name="Remote: Import Power Limit",
+        key="remote_power_import_limit_w",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=NumberDeviceClass.POWER,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=-1,
+        native_max_value=100000,
+        native_step=1,
+        initvalue=-1,
+        display_as_box=True,
+        allowedtypes=HYBRID | PV | AC,
+        prevent_update=True,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:transmission-tower-import",
+    ),
+    SofarModbusNumberEntityDescription(
+        name="Remote: Export Limit Percent",
+        key="remote_power_export_limit_pct",
+        native_unit_of_measurement=PERCENTAGE,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        initvalue=100,
+        allowedtypes=HYBRID | PV | AC,
+        prevent_update=True,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:transmission-tower-export",
+    ),
+    SofarModbusNumberEntityDescription(
+        name="Remote: Import Limit Percent",
+        key="remote_power_import_limit_pct",
+        native_unit_of_measurement=PERCENTAGE,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        initvalue=100,
+        allowedtypes=HYBRID | PV | AC,
+        prevent_update=True,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:transmission-tower-import",
+    ),
+    SofarModbusNumberEntityDescription(
+        name="Remote: Power Limit Change Rate",
+        key="remote_power_limit_speed",
+        native_unit_of_measurement=PERCENTAGE,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=1,
+        native_max_value=65535,
+        native_step=1,
+        initvalue=100,
+        allowedtypes=HYBRID | PV | AC,
+        prevent_update=True,
+        write_method=WRITE_DATA_LOCAL,
+        entity_registry_enabled_default=False,
+        icon="mdi:speedometer",
+    ),
+    SofarModbusNumberEntityDescription(
+        name="Remote: Autorepeat Duration",
+        key="remote_power_autorepeat_duration",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=172800,
+        native_step=60,
+        initvalue=600,
+        allowedtypes=HYBRID | PV | AC,
+        prevent_update=True,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:home-clock",
+    ),
+    SofarModbusNumberEntityDescription(
         name="EPS Wait Time",
         key="eps_wait_time",
         register_data_type=REGISTER_U16,
@@ -639,6 +866,7 @@ NUMBER_TYPES = [
         write_method=WRITE_MULTISINGLE_MODBUS,
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID | PV | AC,
+        entity_registry_enabled_default=False,
     ),
     SofarModbusNumberEntityDescription(
         name="Active Power Export Limit",
@@ -703,7 +931,7 @@ NUMBER_TYPES = [
         register=0x110A,
         fmt="i",
         native_min_value=1,
-        native_max_value=6000,
+        native_max_value=65535,
         native_step=1,
         native_unit_of_measurement=PERCENTAGE,
         write_method=WRITE_MULTISINGLE_MODBUS,
@@ -724,21 +952,7 @@ NUMBER_TYPES = [
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID | PV | AC,
     ),
-    SofarModbusNumberEntityDescription(
-        name="SVG Fixed Reactive Power",
-        key="svg_fixed_reactive_power",
-        register=0x110C,
-        register_data_type=REGISTER_S16,
-        fmt="i",
-        native_min_value=-3276.8,
-        native_max_value=3276.7,
-        native_step=0.1,
-        native_unit_of_measurement=UnitOfReactivePower.KILO_VOLT_AMPERE_REACTIVE,
-        scale=0.1,
-        write_method=WRITE_MULTISINGLE_MODBUS,
-        entity_category=EntityCategory.CONFIG,
-        allowedtypes=HYBRID | PV | AC,
-    ),
+    # 0x110C SVG_Fixed_Reactive_Power_Setting is documented as "Not used, readable" - read-back sensor only
     SofarModbusNumberEntityDescription(
         name="Peak Shaving: Discharge Threshold",
         key="peak_shaving_discharge_threshold",
@@ -3547,6 +3761,27 @@ SELECT_TYPES = [
         allowedtypes=HYBRID | PV,
         write_method=WRITE_DATA_LOCAL,
         icon="mdi:transmission-tower-import",
+    ),
+    SofarModbusSelectEntityDescription(
+        name="Remote: Power Control Mode",
+        key="remote_power_control_mode",
+        register_data_type=REGISTER_U16,
+        option_dict=REMOTE_POWER_CONTROL_OPTIONS,
+        initvalue=0,  # Disabled
+        allowedtypes=HYBRID | PV | AC,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:remote",
+    ),
+    SofarModbusSelectEntityDescription(
+        name="Remote: Power Control Write Mode",
+        key="remote_power_write_mode",
+        register_data_type=REGISTER_U16,
+        option_dict=REMOTE_POWER_WRITE_MODES,
+        initvalue=0,  # Short
+        allowedtypes=HYBRID | PV | AC,
+        write_method=WRITE_DATA_LOCAL,
+        entity_registry_enabled_default=False,
+        icon="mdi:table-column-width",
     ),
     # TIMING AND TOU DISABLED AS THESE ARE NOT WORKING
     # SofarModbusSelectEntityDescription(
@@ -12259,6 +12494,15 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         allowedtypes=HYBRID | AC,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remote: Autorepeat Remaining",
+        key="remote_power_autorepeat_remaining",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_remote_power_autorepeat_remaining,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:home-clock",
     ),
     # ---- G3 control read-back companion sensors (internal) ----
     SofarModbusSensorEntityDescription(
