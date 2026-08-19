@@ -12822,6 +12822,9 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-export",
     ),
+    # Enabled by default like their export twins: on a HYD 20KTL-3PH an import limit of 4.2 %, left over
+    # from an earlier test, dominated the inverter's behaviour while the export limit did nothing, and it
+    # took the read-back string to notice. The import side is not a detail you can afford to hide.
     SofarModbusSensorEntityDescription(
         name="Remote: Applied Import Limit",
         key="remote_power_applied_import_w",
@@ -12830,7 +12833,6 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_remote_power_echo,
         entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-import",
     ),
@@ -12842,7 +12844,6 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         suggested_display_precision=1,
         value_function=value_function_remote_power_echo,
         entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-import",
     ),
