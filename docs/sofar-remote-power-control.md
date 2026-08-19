@@ -67,6 +67,29 @@ grid connection point - *"VDE4105 safety regulation grid-connected power limit"*
 `FeedIn: Update` button. Those are plain `RW`, so use them for state changes, not as a setpoint you
 rewrite every minute.
 
+### Engaging the block can make things worse, and not because of the export limit
+
+*Measured, and the most important warning here.* A later session started from a clean baseline - passive
+`Desired Grid Power` = 0, PV 20 kW, the battery absorbing 18 kW, house load 2 kW, grid **+120 W, i.e. zero
+export**. `Remote: Export Limit Percent` was set to 100 (a limit that restricts nothing) and the button
+pressed. **48 seconds later**, with nothing else touched, the inverter ramped its output from 1.9 kW to
+~6.5 kW at the configured ramp rate and began exporting **5 kW**. Battery charging fell from 18.3 kW to
+12.3 kW - the inverter gave up charging and pushed the surplus to the grid.
+
+The export limit had nothing to do with it. Stepping it 50 % -> 25 % -> 1 % -> 0 % left export at
+-4.8 to -5.3 kW, unchanged. Setting it back to **100 %** did not stop it either. Only
+`Remote: Power Control Mode` = `Disabled` recovered the baseline, within ~20 s.
+
+Two things were engaged by that press: 0x1105 bit0, and an import limit (0x1107) that had been left at
+**4.2 %** from an earlier test. The import limit is the prime suspect - the 48 s delay matches the time the
+inverter needs to ramp an import limit from 100 % down to 4.2 % at the configured rate. So:
+
+- **Leave `Remote: Import Limit Percent` at 100** unless you are deliberately testing an import cap. Check
+  `Remote: Applied Import Limit Percent`, or the `0x1107=` field of `Remote: Register Read-back`, before
+  every test - a stale import limit will invalidate everything you conclude about the export limit.
+- If you already have zero export from passive `Desired Grid Power` = 0, engaging this block may well be a
+  step backwards on this firmware. Verify on your own unit before automating it.
+
 ### Don't run two controllers at once
 
 *Measured.* The session above ran with passive mode commanding `Desired Grid Power` = -15500 W (export as
@@ -179,17 +202,20 @@ as the heartbeat - they write the same registers and the heartbeat will overwrit
 ## Prerequisites
 
 1. **0x1105 enable bits.** 0x1106/0x1107 have no effect until bit0 (active power enable) is set. That is
-   what `Remote: Power Control Mode` does, and it is the only enable that was needed on the test unit.
+   what `Remote: Power Control Mode` does, and it is the only enable that was needed on the test unit -
+   verified by read-back: bit0 latches when the button is pressed and clears again on `Disabled`.
 2. **0x0900 `Remote Config` (installer level).** The protocol's *"Only when the enable bit is turned on
    can the function of the corresponding register be reflected"* note belongs to the 0x09xx block -
    0x0900 bit0 gates 0x0901/0x0902, the installer-level twins of 0x1106/0x110A - not to 0x110x. It is
    unknown whether it also gates this block; on the test unit the limits worked without touching it. The
    `Remote Config` number is disabled by default; enable it in the entity registry to read the value.
-3. **Confirmation is model-dependent.** `Derating Status` (0x0477) bit 7 reads *"Remote active control"*
-   and `Remote Control Status` (0x0478) reports the reactive/PF equivalents, but on the HYD 20KTL-3PH
-   0x0477 reads 0 even while a limit is demonstrably clamping - as does 0x06ED. `Derating Enable Status`
-   (0x047C, disabled by default) carries the corresponding *enable* flags and is likely to behave the
-   same way. Use `Remote: Register Read-back` and `Remote: Read-back Matches` instead.
+3. **Don't trust the status words to confirm anything; use the read-back.** `Derating Status` (0x0477) bit 7
+   reads *"Remote active control"* and `Remote Control Status` (0x0478) reports the reactive/PF equivalents,
+   but on the HYD 20KTL-3PH 0x0477 reads 0 even while a limit is demonstrably in force - as does 0x06ED.
+   `Derating Enable Status` (0x047C, disabled by default) carries the corresponding *enable* flags and is
+   likely to behave the same way. `Remote: Register Read-back` and `Remote: Read-back Matches` are the
+   reliable confirmation: on that unit they showed the whole block storing exactly what was written
+   (0x1105 bit0 latched, 0x1106 following 100 -> 50 -> 25 -> 1 -> 0 -> 100 %) in `Short` write mode.
 
 ## Troubleshooting: the limit does nothing
 
@@ -206,6 +232,9 @@ Work down this list in order - each entity rules out one layer.
    write is being rejected or overwritten - try `Short` write mode (see below). `pending read-back` is
    normal for up to one scan interval after a change; `unknown` means the button has never been pressed or
    the block read is failing.
+   While you are there, read the **`0x1107=`** field of `Remote: Register Read-back` too. A stale import
+   limit changes the inverter's behaviour on its own, and it will make the export limit look guilty of
+   things it did not do (see "Engaging the block can make things worse" above).
 5. `Remote: Full-Scale Ramp Time` - how long the inverter takes to walk to a new limit. A stored 0x110A of
    10 means **nine minutes** for a 90-point change, which looks exactly like "nothing happened".
 6. `Remote: Control Conflict` - another controller is commanding the inverter and the two are being
@@ -243,16 +272,18 @@ local whose default is 100 - which can be slower than what your inverter already
 The protocol note for this block reads: *"When writing, the first address is fixed to any address within
 this range, and the length is the length of the range"*, which is ambiguous about whether a partial write
 is accepted. The default `Short` mode writes only 0x1105-0x1107 (three registers), which is the least
-intrusive and is the only mode confirmed working on the HYD 20KTL-3PH.
+intrusive and is **confirmed accepted on the HYD 20KTL-3PH** - every register read back exactly what was
+written.
 
 **Keep `Short` unless you have proven it is rejected** - i.e. `Remote: Read-back Matches` reports `no:` for
 0x1106 while `Short` is selected, or the log shows a Modbus exception on the write. `Full` writes the whole
 0x1105-0x110C block in one operation, with 0x1108-0x110C re-sent from their current read-back values so
 your reactive-power and power-factor settings are preserved unchanged - but that includes 0x110C, which the
-protocol itself calls *"not used, readable"*, and re-sending a register the inverter does not accept is a
-plausible reason for it to reject the whole write. Selecting `Full` logs a warning for that reason. If any
-of the read-backs is unavailable, the write falls back to Short rather than commanding reactive power 0 and
-power factor 0.
+protocol itself calls *"not used, readable"*, so re-sending it may be a reason for an inverter to reject the
+whole write. That is untested either way; selecting `Full` logs a warning to keep it in mind. `Full` also
+sends 0x110A from `Remote: Power Limit Change Rate`, which can be slower than the rate your inverter
+already holds. If any of the read-backs is unavailable, the write falls back to Short rather than commanding
+reactive power 0 and power factor 0.
 
 ## Automation example
 
@@ -302,10 +333,13 @@ and press the button again. If the battery may be full while PV exceeds the hous
 - Whether 0x1106 ever curtails PV is still open. The measurements above were all taken with the battery
   accepting charge; the decisive test is a 0 % limit with the battery at 100 % SOC and PV above the house
   load. If PV then drops to match the load, this block *can* replace `FeedIn: Maximum Power` = 0.
-- Whether 0x1105 bit0 latches as written on this model, and whether `Full` write mode is rejected. Both are
-  now directly answerable from `Remote: Read-back Matches` - a second session on a HYD 20KTL-3PH saw the
-  limit ignored throughout while `Full` was selected, but with no read-back available at the time it could
-  not be told apart from the inverter simply not honouring the register.
+- **The open question: what actually causes the ~5 kW export when the block is engaged** - an import limit
+  below 100 % (0x1107 was at 4.2 % in that session), or setting 0x1105 bit0 at all. Both changed at the same
+  button press. The test: from a zero-export baseline, set *both* limit percentages to 100, press the
+  button, and wait 90 seconds without touching anything. Export appearing anyway means bit0 alone does it,
+  and the block is unusable on this system.
+- Whether 0x1105 bit0 latches and whether `Short` writes are accepted are **answered**: both yes, verified
+  by read-back on a HYD 20KTL-3PH. Whether `Full` is accepted is still untested.
 - Whether 0x0900 bit0 gates this block (prerequisite 2).
 - Which models populate 0x06ED, 0x0477/0x0478 and 0x047C. On the HYD 20KTL-3PH they read 0.
 - Unrelated but adjacent: peak shaving 0x1132/0x1133 are true grid-side sell/buy caps in Watts, but only
