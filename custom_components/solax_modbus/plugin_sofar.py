@@ -21,6 +21,7 @@ from homeassistant.const import (
 from homeassistant.helpers.entity import EntityCategory  # type: ignore[attr-defined]  # HA stubs incomplete
 
 from custom_components.solax_modbus.const import (  # type: ignore[attr-defined]  # UnitOfReactivePower conditional import
+    BUTTONREPEAT_LOOP,
     BUTTONREPEAT_POST,
     CONF_READ_DCB,
     CONF_READ_EPS,
@@ -202,6 +203,12 @@ def value_function_passivemode(initval: Any, descr: Any, datadict: dict[str, Any
 # they cannot command a grid power target or a battery power window. The passive mode entities remain
 # the only way to do that and are deliberately left untouched as the fallback path.
 #
+# Measured on a HYD 20KTL-3PH (see docs/sofar-remote-power-control.md): 0x1106 caps the inverter's own
+# AC output, not the power crossing the meter, and the inverter honours it by pushing power into the
+# battery - it was never observed curtailing PV. The residual export at a 0 % limit is therefore
+# PV - house load - battery charge acceptance. Zero feed-in at the grid point is the anti-reflux
+# function (0x1023/0x1024, the FeedIn entities), which is EEPROM-class and measured at the PCC.
+#
 # Unlike passive mode there is NO inverter-side watchdog on this block, so a 0 % limit would persist
 # forever if Home Assistant stopped. The autorepeat window below is the fail-safe: when it expires the
 # BUTTONREPEAT_POST call clears the enable bits and restores both limits to 100 %.
@@ -221,6 +228,13 @@ REMOTE_POWER_WRITE_MODES: dict[int, str] = {
 
 REMOTE_POWER_LIMIT_MAX = 1000  # 100.0 % in 0.1 % register units
 
+# Reported by "Remote: Limit Source" so the W-versus-percent decision is visible without reading the log
+REMOTE_POWER_SRC_WATT = "W entity"
+REMOTE_POWER_SRC_PCT = "percent entity"
+REMOTE_POWER_SRC_NO_RATING = "percent entity (W ignored: rated power unknown)"
+REMOTE_POWER_SRC_RELEASED = "released (100 %)"
+REMOTE_POWER_SRC_DISABLED = "disabled (100 %)"
+
 
 def _remote_power_option_value(datadict: dict[str, Any], key: str, options: dict[int, str], default: int = 0) -> int:
     """Resolve a WRITE_DATA_LOCAL select, which holds the option label once set but initvalue while unset."""
@@ -236,24 +250,59 @@ def _remote_power_option_value(datadict: dict[str, Any], key: str, options: dict
         return default
 
 
-def _remote_power_limit(datadict: dict[str, Any], watt_key: str, percent_key: str) -> int:
-    """Return a 0x1106/0x1107 limit in 0.1 % register units.
+def _remote_power_warn(datadict: dict[str, Any], slot: str, message: str | None) -> None:
+    """Log a warning only when it differs from the last one for this slot - this runs on every poll cycle.
 
-    The Watt entity wins whenever it is >= 0 and the inverter power rating (0x06ED) is known;
-    a negative value means "not used, take the percentage entity instead".
+    The state lives under a "_" prefixed key, like _repeatUntil, so it is never persisted as local data
+    and never surfaces as an entity.
     """
-    watts = datadict.get(watt_key)
+    warnings: dict[str, str | None] = datadict.setdefault("_remote_power_warnings", {})
+    if warnings.get(slot) != message:
+        warnings[slot] = message
+        if message:
+            _LOGGER.warning(message)
+
+
+def _remote_power_rated_w(datadict: dict[str, Any]) -> float | None:
+    """Rated power in W for the W -> 0.1 % conversion, or None when no source is available.
+
+    0x06ED reads 0 on some models (confirmed on HYD 20KTL-3PH), hence the manual override entity.
+    """
+    override = datadict.get("remote_power_rated_power_override") or 0
+    if float(override) > 0:
+        return float(override)
     rated_kw = datadict.get("ratedpower_inverter") or 0
-    percent = 0.0
+    if float(rated_kw) > 0:
+        return float(rated_kw) * 1000.0
+    return None
+
+
+def _remote_power_limit(datadict: dict[str, Any], watt_key: str, percent_key: str, rated_w: float | None) -> tuple[int, str]:
+    """Return a 0x1106/0x1107 limit in 0.1 % register units, plus the entity it was derived from.
+
+    The Watt entity wins whenever it is >= 0 and a rated power is known; a negative value means
+    "not used, take the percentage entity instead".
+    """
+    percent_value = datadict.get(percent_key)
+    percent = 100.0 if percent_value is None else float(percent_value)  # fail open: an unset local means no limit
+    source = REMOTE_POWER_SRC_PCT
+    watts = datadict.get(watt_key)
     if watts is not None and float(watts) >= 0:
-        if float(rated_kw) > 0:
-            percent = 100.0 * float(watts) / (float(rated_kw) * 1000.0)
-        else:
-            _LOGGER.warning(f"Sofar remote power: no inverter power rating available, ignoring {watt_key} and using {percent_key}")
-            percent = float(datadict.get(percent_key) or 0)
+        if rated_w:
+            _remote_power_warn(datadict, watt_key, None)
+            # quantise a Watt request downwards so the cap is never exceeded by up to half a register step
+            return max(0, min(REMOTE_POWER_LIMIT_MAX, int(1000.0 * float(watts) / rated_w))), REMOTE_POWER_SRC_WATT
+        _remote_power_warn(
+            datadict,
+            watt_key,
+            "Sofar remote power: no inverter power rating available (0x06ED reads "
+            f"{datadict.get('ratedpower_inverter')}), ignoring {watt_key} and using {percent_key}. "
+            f"Set the 'Remote: Rated Power Override' number to your inverter's rated power in W to use the Watt entities.",
+        )
+        source = REMOTE_POWER_SRC_NO_RATING
     else:
-        percent = float(datadict.get(percent_key) or 0)
-    return max(0, min(REMOTE_POWER_LIMIT_MAX, round(percent * 10)))
+        _remote_power_warn(datadict, watt_key, None)
+    return max(0, min(REMOTE_POWER_LIMIT_MAX, round(percent * 10))), source
 
 
 def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: dict[str, Any]) -> dict[str, Any]:
@@ -264,13 +313,14 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
     """
     release = initval == BUTTONREPEAT_POST
     bits = 0 if release else _remote_power_option_value(datadict, "remote_power_control_mode", REMOTE_POWER_CONTROL_OPTIONS)
+    rated_w = _remote_power_rated_w(datadict)
 
     if bits == 0:  # nothing enabled: hand control back to the inverter with both limits wide open
-        export_limit = REMOTE_POWER_LIMIT_MAX
-        import_limit = REMOTE_POWER_LIMIT_MAX
+        export_limit = import_limit = REMOTE_POWER_LIMIT_MAX
+        export_src = import_src = REMOTE_POWER_SRC_RELEASED if release else REMOTE_POWER_SRC_DISABLED
     else:
-        export_limit = _remote_power_limit(datadict, "remote_power_export_limit_w", "remote_power_export_limit_pct")
-        import_limit = _remote_power_limit(datadict, "remote_power_import_limit_w", "remote_power_import_limit_pct")
+        export_limit, export_src = _remote_power_limit(datadict, "remote_power_export_limit_w", "remote_power_export_limit_pct", rated_w)
+        import_limit, import_src = _remote_power_limit(datadict, "remote_power_import_limit_w", "remote_power_import_limit_pct", rated_w)
 
     data: list[tuple[Any, Any]] = [
         (REGISTER_U16, bits),  # 0x1105 Power_Control
@@ -281,24 +331,90 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
     # The protocol note for this block is ambiguous about partial writes ("the first address is fixed to
     # any address within this range, and the length is the length of the range"). If the inverter rejects
     # the 3 register write, "Full" re-sends 0x1108-0x110C from the read-back values so nothing changes there.
+    # 0x110A is deliberately not part of the Short write: it would drag 0x1108/0x1109 along (the write is
+    # contiguous), i.e. commanding reactive power and power factor as a side effect of a curtailment write.
+    # The ramp rate is a set-once value - use the direct "Active Power Change Rate" number for it.
     if _remote_power_option_value(datadict, "remote_power_write_mode", REMOTE_POWER_WRITE_MODES) == 1:
-        data += [
-            (REGISTER_S16, round(float(datadict.get("reactive_power_setting") or 0) * 10)),  # 0x1108
-            (REGISTER_S16, round(float(datadict.get("power_factor_setting") or 0) * 100)),  # 0x1109
-            (REGISTER_U16, max(1, min(65535, int(datadict.get("remote_power_limit_speed") or 1)))),  # 0x110A
-            (REGISTER_U16, round(float(datadict.get("reactive_power_response_time") or 0) * 10)),  # 0x110B
-            (REGISTER_S16, round(float(datadict.get("svg_fixed_reactive_power") or 0) * 10)),  # 0x110C
-        ]
+        tail_keys = (
+            "reactive_power_setting",
+            "power_factor_setting",
+            "remote_power_limit_speed",
+            "reactive_power_response_time",
+            "svg_fixed_reactive_power",
+        )
+        missing = [key for key in tail_keys if datadict.get(key) is None]
+        if missing:
+            # without the read-backs the tail would command reactive power 0 and power factor 0
+            _remote_power_warn(
+                datadict,
+                "write_mode",
+                f"Sofar remote power: Full write mode needs the 0x1108-0x110C read-backs, missing {missing} - writing 0x1105-0x1107 only",
+            )
+        else:
+            _remote_power_warn(datadict, "write_mode", None)
+            data += [
+                (REGISTER_S16, round(float(datadict["reactive_power_setting"]) * 10)),  # 0x1108
+                (REGISTER_S16, round(float(datadict["power_factor_setting"]) * 100)),  # 0x1109
+                (REGISTER_U16, max(1, min(65535, int(datadict["remote_power_limit_speed"])))),  # 0x110A
+                (REGISTER_U16, round(float(datadict["reactive_power_response_time"]) * 10)),  # 0x110B
+                (REGISTER_S16, round(float(datadict["svg_fixed_reactive_power"]) * 10)),  # 0x110C
+            ]
+
+    # Publish what was actually sent - see the "Remote: Applied ..." computed sensors
+    datadict["remote_power_applied_export_pct"] = export_limit / 10
+    datadict["remote_power_applied_import_pct"] = import_limit / 10
+    datadict["remote_power_applied_export_w"] = round(export_limit / REMOTE_POWER_LIMIT_MAX * rated_w) if rated_w else None
+    datadict["remote_power_applied_import_w"] = round(import_limit / REMOTE_POWER_LIMIT_MAX * rated_w) if rated_w else None
+    datadict["remote_power_limit_source"] = export_src if export_src == import_src else f"export: {export_src}, import: {import_src}"
+    datadict["remote_power_conflict"] = _remote_power_conflict(datadict, bits)
 
     if bits == 0 and not release:  # user selected Disabled: stop repeating, the write above already released
         autorepeat_stop(datadict, "remote_power_control_trigger")
 
-    _LOGGER.debug(f"Sofar remote power control: initval={initval} bits={bits} export={export_limit} import={import_limit} data={data}")
+    logline = (
+        f"Sofar remote power control: initval={initval} bits={bits} export={export_limit} ({export_src}) "
+        f"import={import_limit} ({import_src}) rated_w={rated_w} data={data}"
+    )
+    if initval == BUTTONREPEAT_LOOP:
+        _LOGGER.debug(logline)
+    else:  # manual press and final release are rare enough to log unconditionally
+        _LOGGER.info(logline)
     return {"action": WRITE_MULTI_MODBUS, "register": 0x1105, "data": data}
+
+
+def _remote_power_conflict(datadict: dict[str, Any], bits: int) -> str:
+    """Report other controllers that fight the RWV limits, for the "Remote: Control Conflict" sensor.
+
+    Passive mode keeps commanding its own grid power setpoint while these limits are applied, which was
+    the cause of the residual export measured on the HYD 20KTL-3PH.
+    """
+    if bits == 0:
+        return "None"
+    conflicts = []
+    if datadict.get("charger_use_mode") == "Passive Mode":
+        conflicts.append("Energy Storage Mode is Passive Mode")
+    grid_power = datadict.get("passive_mode_grid_power")
+    if grid_power not in (None, 0):
+        conflicts.append(f"Passive: Desired Grid Power is {grid_power} W")
+    if not conflicts:
+        _remote_power_warn(datadict, "conflict", None)
+        return "None"
+    message = ", ".join(conflicts)
+    _remote_power_warn(
+        datadict,
+        "conflict",
+        f"Sofar remote power: limits are applied while another controller is active ({message}) - the inverter arbitrates between them",
+    )
+    return message
 
 
 def value_function_remote_power_autorepeat_remaining(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
     return autorepeat_remaining(datadict, "remote_power_control_trigger", time())
+
+
+def value_function_remote_power_echo(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
+    """Echo the value the last remote power write recorded under this sensor's own key."""
+    return datadict.get(descr.key)
 
 
 def value_function_passive_timeout(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
@@ -419,6 +535,12 @@ STATE2_BITS = {
     9: "Remote off",
     10: "DRMs0 off",
 }
+# State6 (0x047C) carries the *enable* flags for the derating functions, where State1 carries "is clamping now"
+STATE6_BITS = {
+    0: "Remote derating enable",
+    1: "Logic-IF derating enable",
+    2: "Feed-in limitation enable",
+}
 
 
 def _decode_bits(value: Any, bitmap: dict[int, str], zero_label: str = "Normal") -> Any:
@@ -440,6 +562,10 @@ def value_function_derating_state1(initval: Any, descr: Any, datadict: dict[str,
 
 def value_function_derating_state2(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
     return _decode_bits(initval, STATE2_BITS, zero_label="None")
+
+
+def value_function_derating_state6(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
+    return _decode_bits(initval, STATE6_BITS, zero_label="None")
 
 
 # ================================= Button Declarations ============================================================
@@ -483,10 +609,13 @@ BUTTON_TYPES = [
         value_function=autorepeat_function_sofar_power_control,
         depends_on=[
             "ratedpower_inverter",
+            "remote_power_rated_power_override",
             "reactive_power_setting",
             "power_factor_setting",
             "reactive_power_response_time",
             "svg_fixed_reactive_power",
+            "charger_use_mode",
+            "passive_mode_grid_power",
         ],
     ),
     # Unlikely to work as Sofar requires writing 7 registers, where the last needs to have the constant value of '1' during a write operation.
@@ -654,6 +783,27 @@ NUMBER_TYPES = [
         icon="mdi:transmission-tower-import",
     ),
     SofarModbusNumberEntityDescription(
+        # 0x06ED reads 0 on some models (confirmed on HYD 20KTL-3PH), which leaves the Watt entities below
+        # with no way to convert to the register's percentage. Set this to the inverter's rated power in W.
+        name="Remote: Rated Power Override",
+        key="remote_power_rated_power_override",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=NumberDeviceClass.POWER,
+        register_data_type=REGISTER_U16,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=100000,
+        native_step=100,
+        initvalue=0,  # 0 = auto: take the "Inverter power rating" sensor (0x06ED)
+        display_as_box=True,
+        allowedtypes=HYBRID | PV | AC,
+        write_method=WRITE_DATA_LOCAL,
+        entity_category=EntityCategory.CONFIG,
+        icon="mdi:flash-alert",
+    ),
+    SofarModbusNumberEntityDescription(
+        # requires a rated power, either from 0x06ED or from "Remote: Rated Power Override" above -
+        # watch "Remote: Limit Source" to see whether this entity or the percent one below is being used
         name="Remote: Export Power Limit",
         key="remote_power_export_limit_w",
         native_unit_of_measurement=UnitOfPower.WATT,
@@ -695,10 +845,9 @@ NUMBER_TYPES = [
         fmt="i",
         native_min_value=0,
         native_max_value=100,
-        native_step=1,
+        native_step=0.1,  # the register resolution: 20 W steps on a 20 kW inverter
         initvalue=100,
         allowedtypes=HYBRID | PV | AC,
-        prevent_update=True,
         write_method=WRITE_DATA_LOCAL,
         icon="mdi:transmission-tower-export",
     ),
@@ -710,10 +859,9 @@ NUMBER_TYPES = [
         fmt="i",
         native_min_value=0,
         native_max_value=100,
-        native_step=1,
+        native_step=0.1,  # the register resolution: 20 W steps on a 20 kW inverter
         initvalue=100,
         allowedtypes=HYBRID | PV | AC,
-        prevent_update=True,
         write_method=WRITE_DATA_LOCAL,
         icon="mdi:transmission-tower-import",
     ),
@@ -12504,6 +12652,72 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:home-clock",
     ),
+    # What the last write to 0x1105-0x1107 actually contained, recorded by
+    # autorepeat_function_sofar_power_control. "unknown" until the button has been pressed once.
+    SofarModbusSensorEntityDescription(
+        name="Remote: Applied Export Limit",
+        key="remote_power_applied_export_w",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_remote_power_echo,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:transmission-tower-export",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remote: Applied Export Limit Percent",
+        key="remote_power_applied_export_pct",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_function=value_function_remote_power_echo,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:transmission-tower-export",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remote: Applied Import Limit",
+        key="remote_power_applied_import_w",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_remote_power_echo,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:transmission-tower-import",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remote: Applied Import Limit Percent",
+        key="remote_power_applied_import_pct",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_function=value_function_remote_power_echo,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:transmission-tower-import",
+    ),
+    SofarModbusSensorEntityDescription(
+        # "W entity" / "percent entity" / "percent entity (W ignored: rated power unknown)" / "released"
+        name="Remote: Limit Source",
+        key="remote_power_limit_source",
+        value_function=value_function_remote_power_echo,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:call-split",
+    ),
+    SofarModbusSensorEntityDescription(
+        # other controllers commanding the inverter while these limits are applied
+        name="Remote: Control Conflict",
+        key="remote_power_conflict",
+        value_function=value_function_remote_power_echo,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:alert-outline",
+    ),
     # ---- G3 control read-back companion sensors (internal) ----
     SofarModbusSensorEntityDescription(
         name="Power Control (bitmask)",
@@ -12725,6 +12939,21 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:remote",
+    ),
+    SofarModbusSensorEntityDescription(
+        # State6 - the enable flags for remote / logic interface / feed-in derating. Own block with
+        # ignore_readerror so a model that does not implement 0x047C cannot take 0x0477/0x0478 down with it.
+        # Disabled by default: on the HYD 20KTL-3PH its siblings read 0 even while a limit is clamping.
+        name="Derating Enable Status",
+        key="derating_enable_status",
+        register=0x047C,
+        newblock=True,
+        ignore_readerror=True,
+        scale=value_function_derating_state6,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        allowedtypes=HYBRID | PV | AC,
+        icon="mdi:toggle-switch-outline",
     ),
     SofarModbusSensorEntityDescription(
         name="Fault 13",
