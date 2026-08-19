@@ -23,11 +23,11 @@ your meter. The inverter's own energy management still decides how to operate wi
 
 | What you want | Register | Verdict |
 |---|---|---|
-| Dynamic curtailment on a fast signal (negative prices, grid limit), with a ramp | 0x1106 + 0x110A | **Yes** - this is what the block is for, and the only wear-free way to do it |
-| Cap grid draw / peak shaving | 0x1107 Active Power Import Limit | **Yes** - new capability |
-| Reactive power / power factor | 0x1108 / 0x1109 | **Yes** |
-| Reduce export while the battery still has charge headroom | 0x1106 | Yes, but passive `Desired Grid Power` = 0 already does this |
-| **Zero feed-in when the battery is full and PV exceeds the load** | - | **No** - see below. Use `FeedIn: Maximum Power` (0x1024) |
+| Trim an export you are **actively commanding** through passive mode, on a fast signal, with a ramp | 0x1106 + 0x110A | **Yes** - measured 1:1 against the commanded part, and the only wear-free way to do it |
+| Cap grid draw / peak shaving | 0x1107 Active Power Import Limit | Untested as a feature - but see the warning below, a low value here changes behaviour dramatically |
+| Reactive power / power factor | 0x1108 / 0x1109 | Untested |
+| Reduce export when you are *not* commanding any | 0x1106 | **No** - measured: a 2 kW cap with 4.8 kW of output. See below |
+| **Zero feed-in when PV exceeds load plus what the battery accepts** | - | **No** - use `FeedIn: Maximum Power` (0x1024) |
 | Desired grid power setpoint (`Passive: Desired Grid Power`) | - | **No** |
 | Battery charge/discharge window (`Passive: Minimum/Maximum Battery Power`) | - | **No** |
 
@@ -37,35 +37,47 @@ charging. The passive-mode entities are deliberately left untouched by this feat
 supported fallback: if the RWV path misbehaves on your inverter, set `Remote: Power Control Mode` to
 `Disabled` and carry on using `Passive: Update Battery Charge/Discharge` exactly as before.
 
-### Why a 0 % export limit is not 0 W at the meter
+### What 0x1106 caps: commanded export, not total output
 
-*Measured.* With the limit at 0 % the inverter kept exporting 0.9-3.1 kW. It honours the cap by pushing
-power into the battery, and it was **never observed curtailing PV**. The behaviour across the whole
-session fits one law:
+This is the model that fits every measurement across five hardware sessions, and it is not what the
+register's name suggests. Split your export into two parts:
+
+- **Involuntary export** - PV the inverter cannot store or consume: `PV - house load - battery charge
+  acceptance`. 0x1106 has **no authority over this at all**.
+- **Commanded export** - the part passive mode asks for via `Passive: Desired Grid Power`. 0x1106 caps
+  *this*.
 
 ```
-inverter AC output  =  (PV - battery charge acceptance)  +  limit
-grid export         =  inverter AC output - house load
+grid export  =  (PV - house load - battery charge acceptance)  +  min(commanded export, 0x1106 limit)
 ```
 
-So the residual export at a 0 % limit is `PV - house load - whatever the battery will take`:
+With passive mode commanding -15500 W, the limit tracked beautifully - involuntary residual 3.1 kW, then a
+2 kW limit gave 4.85 kW of export, 4 kW gave 7.3 kW, 6 kW gave 8.7 kW. With `Desired Grid Power` = 0,
+nothing is commanded, and the limit does nothing whatsoever. Read-back-verified, so there is no doubt about
+what the inverter was holding:
 
-| Time | PV | Battery | House load | Limit | Grid |
+| stored 0x1106 | PV | battery | BMS charge limit | AC output | grid |
 |---|---|---|---|---|---|
-| 07:38 | 13.5 kW | +8.7 kW | 1.7 kW | 0 % | **3.1 kW export** |
-| 07:44-07:47 | 13.4 kW | +8.6 kW | 3.8 kW | 0 % | **0.9-1.1 kW export** |
-| 07:55-08:00 | 13.8 kW | +8.9 kW | 5.7 kW | 0 % | **0.85 kW import** |
-| 08:06 | 14.3 kW | -0.5 kW | 0.8 kW | 50 % | 13.2 kW export (4.8 kW residual + 10 kW limit) |
+| 100 % | 16.4 kW | +12.8 kW | 12.74 kW | 3.6 kW | -2.2 kW |
+| 50 % | 16.2 | +12.5 | 12.54 | 3.7 | -2.3 |
+| 10 % (= 2 kW cap) | 15.7 | +10.9 | 10.90 | **4.8 kW** | -3.4 |
+| 0 % | 15.9 | +10.5 | 11.80 | **5.4 kW** | -4.1 |
 
-The third row is the same limit doing exactly what you would expect - the house load happened to consume
-the residual. The limit itself is accurate: the response is **1 % of rated power per 1 % written**,
-verified for 0-30 % and at 50 % on a 20 kW machine.
+A 2 kW cap with 4.8 kW of output, and a 0 % cap with 5.4 kW - because all of that output was involuntary.
 
-For genuine zero feed-in you need the **anti-reflux** function, which the protocol describes against the
-grid connection point - *"VDE4105 safety regulation grid-connected power limit"*, measured at the PCC
-(0x0488). That is `FeedIn: Limitation Mode` (0x1023) plus `FeedIn: Maximum Power` (0x1024) and the
-`FeedIn: Update` button. Those are plain `RW`, so use them for state changes, not as a setpoint you
-rewrite every minute.
+**So this block cannot give you zero export.** For that you need the **anti-reflux** function, which the
+protocol describes against the grid connection point - *"VDE4105 safety regulation grid-connected power
+limit"*, measured at the PCC (0x0488). That is `FeedIn: Limitation Mode` (0x1023) plus `FeedIn: Maximum
+Power` (0x1024) and the `FeedIn: Update` button. Those are plain `RW`, so use them for state changes, not as
+a setpoint you rewrite every minute.
+
+### Watch the battery's charge limit, not just its power
+
+The involuntary residual moves with what the battery will *accept*, which is not a constant. On the test
+system the BMS-reported charge limit tapered from **15.7 kW at 92 % SOC to 10.3 kW at 96 %**, and the
+battery charged at exactly that value whenever nothing interfered - within 100 W. Every kilowatt the BMS
+withdraws appears at the grid instead. If your inverter exposes a max-charge-power sensor, put it on the
+same chart as PV, battery power and grid power; without it, the residual export looks inexplicable.
 
 ### Engaging the block can make things worse, and not because of the export limit
 
@@ -80,9 +92,9 @@ The export limit had nothing to do with it. Stepping it 50 % -> 25 % -> 1 % -> 0
 -4.8 to -5.3 kW, unchanged. Setting it back to **100 %** did not stop it either. Only
 `Remote: Power Control Mode` = `Disabled` recovered the baseline, within ~20 s.
 
-Two things were engaged by that press: 0x1105 bit0, and an import limit (0x1107) that had been left at
-**4.2 %** from an earlier test. The import limit is the prime suspect - the 48 s delay matches the time the
-inverter needs to ramp an import limit from 100 % down to 4.2 % at the configured rate. So:
+**The cause was the import limit** (0x1107), which had been left at **4.2 %** from an earlier test.
+Confirmed by repeating the identical press with 0x1107 at 100 %: export stayed at its pre-press value for
+the full two and a half minutes, no ramp, no jump. So:
 
 - **Leave `Remote: Import Limit Percent` at 100** unless you are deliberately testing an import cap. Check
   `Remote: Applied Import Limit Percent`, or the `0x1107=` field of `Remote: Register Read-back`, before
@@ -275,15 +287,36 @@ is accepted. The default `Short` mode writes only 0x1105-0x1107 (three registers
 intrusive and is **confirmed accepted on the HYD 20KTL-3PH** - every register read back exactly what was
 written.
 
+**`Full` is rejected outright on the HYD 20KTL-3PH.** Read-back proof: after selecting it, an export limit
+of 1 % left 0x1106 sitting at the previous 10 %, and the subsequent release left 0x1105 at 1 - i.e. the
+inverter refused an eight-register write at 0x1105 and kept refusing every write after it. `Full` re-sends
+0x110C, which the protocol itself calls *"not used, readable"*, which is the likely reason.
+
 **Keep `Short` unless you have proven it is rejected** - i.e. `Remote: Read-back Matches` reports `no:` for
-0x1106 while `Short` is selected, or the log shows a Modbus exception on the write. `Full` writes the whole
-0x1105-0x110C block in one operation, with 0x1108-0x110C re-sent from their current read-back values so
-your reactive-power and power-factor settings are preserved unchanged - but that includes 0x110C, which the
-protocol itself calls *"not used, readable"*, so re-sending it may be a reason for an inverter to reject the
-whole write. That is untested either way; selecting `Full` logs a warning to keep it in mind. `Full` also
-sends 0x110A from `Remote: Power Limit Change Rate`, which can be slower than the rate your inverter
-already holds. If any of the read-backs is unavailable, the write falls back to Short rather than commanding
-reactive power 0 and power factor 0.
+0x1106 while `Short` is selected. Note that the hub does not check Modbus write responses, so a refused
+write produces no log line of its own: **`Remote: Read-back Matches` is the only place it shows up.**
+
+The plugin now protects itself, so a rejected `Full` cannot strand you:
+
+- After **two consecutive read-backs** that disagree with what was sent, it logs an error and starts sending
+  the three-register `Short` payload instead. `Remote: Read-back Matches` appends
+  `(Short fallback: Full was rejected)` while that is in force. Selecting `Short` yourself clears the state,
+  so re-selecting `Full` later gets a fresh chance.
+- The autorepeat **release** only uses `Full` if a `Full` write has been *seen to land* on your inverter.
+  Otherwise it goes out as `Short`. The release is the one write that must succeed - if it is rejected, the
+  limits stay applied with no heartbeat left to retry them.
+
+**If you are stuck with a limit applied** (`Remote: Register Read-back` shows `0x1105=1` and a limit you
+cannot clear): set `Remote: Power Control Write Mode` to `Short`, press `Remote: Update Power Limits`, and
+confirm the read-back reads `0x1105=0 0x1106=100.0% 0x1107=100.0%`. Failing that, the direct
+`Active Power Export Limit` number and the `Power Control (bitmask)` number (disabled by default) write
+single registers through a different code path and can be used by hand.
+
+What `Full` does when it works: writes the whole 0x1105-0x110C block in one operation, with 0x1108-0x110C
+re-sent from their current read-back values so your reactive-power and power-factor settings are preserved
+unchanged. It also sends 0x110A from `Remote: Power Limit Change Rate`, which can be slower than the rate
+your inverter already holds. If any of the read-backs is unavailable, the write falls back to Short rather
+than commanding reactive power 0 and power factor 0.
 
 ## Automation example
 
@@ -333,13 +366,15 @@ and press the button again. If the battery may be full while PV exceeds the hous
 - Whether 0x1106 ever curtails PV is still open. The measurements above were all taken with the battery
   accepting charge; the decisive test is a 0 % limit with the battery at 100 % SOC and PV above the house
   load. If PV then drops to match the load, this block *can* replace `FeedIn: Maximum Power` = 0.
-- **The open question: what actually causes the ~5 kW export when the block is engaged** - an import limit
-  below 100 % (0x1107 was at 4.2 % in that session), or setting 0x1105 bit0 at all. Both changed at the same
-  button press. The test: from a zero-export baseline, set *both* limit percentages to 100, press the
-  button, and wait 90 seconds without touching anything. Export appearing anyway means bit0 alone does it,
-  and the block is unusable on this system.
-- Whether 0x1105 bit0 latches and whether `Short` writes are accepted are **answered**: both yes, verified
-  by read-back on a HYD 20KTL-3PH. Whether `Full` is accepted is still untested.
+- **A 0 % export limit perversely increases export.** Reproducible in two sessions: at exactly 0 % the
+  inverter charged 1.3-1.4 kW *below* the BMS charge limit and exported that instead, where 10 % and 50 %
+  left charging at the limit. Cause unknown; avoid 0 % and use 1 % if you need a near-zero commanded cap.
+- Whether 0x1105 bit0 latches, whether `Short` writes are accepted, and whether `Full` is accepted are all
+  **answered** by read-back on a HYD 20KTL-3PH: yes, yes, and no respectively.
+- Untested, one observation each: `FeedIn: Maximum Power` = 0 with mode `Enabled - 3-phase limit` did not
+  appear to stop a ~3 kW involuntary export either, but the feed-in mode and the passive battery window were
+  both changed during that window, so it needs a clean test of its own. The 0x1107 import limit has never
+  been exercised as an actual peak-shaving feature - only observed wrecking an export test.
 - Whether 0x0900 bit0 gates this block (prerequisite 2).
 - Which models populate 0x06ED, 0x0477/0x0478 and 0x047C. On the HYD 20KTL-3PH they read 0.
 - Unrelated but adjacent: peak shaving 0x1132/0x1133 are true grid-side sell/buy caps in Watts, but only

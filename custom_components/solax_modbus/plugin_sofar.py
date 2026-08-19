@@ -247,6 +247,14 @@ REMOTE_POWER_SRC_DISABLED = "disabled (100 %)"
 _REMOTE_POWER_READBACK_SEQ = "_remote_power_readback_seq"
 _REMOTE_POWER_EXPECTED = "_remote_power_expected"
 _REMOTE_POWER_EXPECTED_SEQ = "_remote_power_expected_seq"
+_REMOTE_POWER_COUNTED_SEQ = "_remote_power_counted_seq"  # read-back generation the fail counter last judged
+_REMOTE_POWER_FAIL_COUNT = "_remote_power_fail_count"
+_REMOTE_POWER_FULL_VERIFIED = "_remote_power_full_verified"  # a Full write has been seen to land
+_REMOTE_POWER_SHORT_FALLBACK = "_remote_power_short_fallback"  # Full was rejected, sending Short instead
+
+# Consecutive read-backs that must disagree with what we sent before falling back from Full to Short. Two,
+# so a single stale or mid-ramp read cannot trigger it.
+_REMOTE_POWER_FALLBACK_AFTER = 2
 
 # (label, datadict key, format) for "Remote: Register Read-back". The keys are the existing internal
 # read-back sensors of the block; the formats mirror each register's protocol scaling.
@@ -359,6 +367,15 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
     bits = 0 if release else _remote_power_option_value(datadict, "remote_power_control_mode", REMOTE_POWER_CONTROL_OPTIONS)
     rated_w = _remote_power_rated_w(datadict)
 
+    write_mode_full = _remote_power_option_value(datadict, "remote_power_write_mode", REMOTE_POWER_WRITE_MODES) == 1
+    _remote_power_track_verification(datadict, write_mode_full)
+    use_full = write_mode_full and not datadict.get(_REMOTE_POWER_SHORT_FALLBACK)
+    if release and not datadict.get(_REMOTE_POWER_FULL_VERIFIED):
+        # The release is the one write that must land - a rejected release leaves the limits applied with no
+        # heartbeat left to retry them. Without positive evidence that this inverter accepts Full, send the
+        # three registers known to work; nothing in 0x1108-0x110C needs changing in order to release.
+        use_full = False
+
     if bits == 0:  # nothing enabled: hand control back to the inverter with both limits wide open
         export_limit = import_limit = REMOTE_POWER_LIMIT_MAX
         export_src = import_src = REMOTE_POWER_SRC_RELEASED if release else REMOTE_POWER_SRC_DISABLED
@@ -378,7 +395,7 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
     # 0x110A is deliberately not part of the Short write: it would drag 0x1108/0x1109 along (the write is
     # contiguous), i.e. commanding reactive power and power factor as a side effect of a curtailment write.
     # The ramp rate is a set-once value - use the direct "Active Power Change Rate" number for it.
-    if _remote_power_option_value(datadict, "remote_power_write_mode", REMOTE_POWER_WRITE_MODES) == 1:
+    if use_full:
         tail_keys = (
             "reactive_power_setting",
             "power_factor_setting",
@@ -428,7 +445,7 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
 
     logline = (
         f"Sofar remote power control: initval={initval} bits={bits} export={export_limit} ({export_src}) "
-        f"import={import_limit} ({import_src}) rated_w={rated_w} data={data}"
+        f"import={import_limit} ({import_src}) rated_w={rated_w} full={use_full} data={data}"
     )
     if initval == BUTTONREPEAT_LOOP:
         _LOGGER.debug(logline)
@@ -510,8 +527,13 @@ def _remote_power_readback_pct(datadict: dict[str, Any], key: str) -> float | No
         return None
 
 
-def value_function_remote_power_readback_match(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
-    """Compare the 0x1105-0x1107 read-back against what the last remote power write sent."""
+def _remote_power_verify(datadict: dict[str, Any]) -> str:
+    """Compare the 0x1105-0x1107 read-back against what the last remote power write sent.
+
+    Returns "yes", "no: ...", "pending read-back" or "unknown". Note that a rejected Modbus write is not
+    reported anywhere else - the hub does not check the write response - so this comparison is the only
+    place a refused write becomes visible.
+    """
     expected = datadict.get(_REMOTE_POWER_EXPECTED)
     if not isinstance(expected, dict):
         return "unknown"  # the button has never been pressed
@@ -531,7 +553,46 @@ def value_function_remote_power_readback_match(initval: Any, descr: Any, datadic
         problems.append(f"0x1107 holds {import_pct:.1f} %, sent {float(expected['import_pct']):.1f} %")
     if not problems:
         return "yes"
-    return ("no: " + "; ".join(problems))[:MAX_LENGTH_STATE_STATE]
+    return "no: " + "; ".join(problems)
+
+
+def value_function_remote_power_readback_match(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+    """Report the read-back verdict, plus the Short fallback if Full turned out to be rejected."""
+    verdict = _remote_power_verify(datadict)
+    if datadict.get(_REMOTE_POWER_SHORT_FALLBACK):
+        verdict = f"{verdict} (Short fallback: Full was rejected)"
+    return verdict[:MAX_LENGTH_STATE_STATE]
+
+
+def _remote_power_track_verification(datadict: dict[str, Any], write_mode_full: bool) -> None:
+    """Judge the last write's read-back once per read-back generation, and fall back from Full to Short.
+
+    The heartbeat writes on every interval group's poll while 0x1105-0x110C is re-read only on its own scan
+    group, so the counter must advance per *new read-back* rather than per write - otherwise one stale
+    mismatch would trip the fallback immediately.
+    """
+    if not write_mode_full:  # selecting Short again gives Full a fresh chance next time it is selected
+        datadict[_REMOTE_POWER_SHORT_FALLBACK] = False
+    seq = int(datadict.get(_REMOTE_POWER_READBACK_SEQ, 0))
+    if seq <= int(datadict.get(_REMOTE_POWER_COUNTED_SEQ, -1)):
+        return  # no read-back since the last judgement
+    verdict = _remote_power_verify(datadict)
+    if verdict == "yes":
+        datadict[_REMOTE_POWER_COUNTED_SEQ] = seq
+        datadict[_REMOTE_POWER_FAIL_COUNT] = 0
+        if write_mode_full:
+            datadict[_REMOTE_POWER_FULL_VERIFIED] = True  # positive evidence that this inverter accepts Full
+    elif verdict.startswith("no"):
+        datadict[_REMOTE_POWER_COUNTED_SEQ] = seq
+        count = int(datadict.get(_REMOTE_POWER_FAIL_COUNT, 0)) + 1
+        datadict[_REMOTE_POWER_FAIL_COUNT] = count
+        if write_mode_full and count >= _REMOTE_POWER_FALLBACK_AFTER and not datadict.get(_REMOTE_POWER_SHORT_FALLBACK):
+            datadict[_REMOTE_POWER_SHORT_FALLBACK] = True
+            _LOGGER.error(
+                f"Sofar remote power: the inverter has not stored {count} consecutive Full (0x1105-0x110C) writes "
+                f"({verdict}) - falling back to Short (0x1105-0x1107). Select Short in 'Remote: Power Control "
+                f"Write Mode' to make this permanent."
+            )
 
 
 def _remote_power_limit_speed(datadict: dict[str, Any]) -> float | None:
