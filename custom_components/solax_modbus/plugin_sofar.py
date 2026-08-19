@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.number import NumberDeviceClass
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
+    MAX_LENGTH_STATE_STATE,
     PERCENTAGE,
     UnitOfApparentPower,
     UnitOfElectricCurrent,
@@ -173,6 +174,12 @@ class SofarModbusSensorEntityDescription(BaseModbusSensorEntityDescription):
 
 def validate_register_data(descr: Any, value: Any, datadict: dict[str, Any]) -> Any:
     """Normalize known Sofar sentinel values before entities consume them."""
+    if descr.register == 0x1106 and value is not None:
+        # Count successful decodes of the remote power block so "Remote: Read-back Matches" can tell a
+        # fresh read-back from a stale one: the heartbeat writes on every interval group's poll while
+        # 0x1105-0x110C is only re-read on its own scan group. Guarded on the value because this hook also
+        # runs for failed decodes, and kept to one register so the counter means "the block was re-read".
+        datadict[_REMOTE_POWER_READBACK_SEQ] = int(datadict.get(_REMOTE_POWER_READBACK_SEQ, 0)) + 1
     if value == 0xFFFF and descr.key in _UNINITIALIZED_SELECT_DEFAULTS:
         normalized = _UNINITIALIZED_SELECT_DEFAULTS[descr.key]
         _LOGGER.debug(f"Sofar: normalizing uninitialized register value for {descr.key} from 65535 to {normalized}")
@@ -234,6 +241,30 @@ REMOTE_POWER_SRC_PCT = "percent entity"
 REMOTE_POWER_SRC_NO_RATING = "percent entity (W ignored: rated power unknown)"
 REMOTE_POWER_SRC_RELEASED = "released (100 %)"
 REMOTE_POWER_SRC_DISABLED = "disabled (100 %)"
+
+# Private datadict keys backing "Remote: Read-back Matches". The "_" prefix keeps them out of
+# saveLocalData (which only persists hub.writeLocals keys) and out of the entity registry, like _repeatUntil.
+_REMOTE_POWER_READBACK_SEQ = "_remote_power_readback_seq"
+_REMOTE_POWER_EXPECTED = "_remote_power_expected"
+_REMOTE_POWER_EXPECTED_SEQ = "_remote_power_expected_seq"
+
+# (label, datadict key, format) for "Remote: Register Read-back". The keys are the existing internal
+# read-back sensors of the block; the formats mirror each register's protocol scaling.
+_REMOTE_POWER_READBACK_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("0x1105", "power_control", "{:.0f}"),
+    ("0x1106", "active_power_export_limit", "{:.1f}%"),
+    ("0x1107", "active_power_import_limit", "{:.1f}%"),
+    ("0x1108", "reactive_power_setting", "{:.1f}%"),
+    ("0x1109", "power_factor_setting", "{:.2f}"),
+    ("0x110A", "active_power_limit_speed", "{:.0f}"),
+    ("0x110B", "reactive_power_response_time", "{:.1f}s"),
+    ("0x110C", "svg_fixed_reactive_power", "{:.1f}"),
+)
+
+# 0x110A is documented as a plain "%", but every sibling rate register in the protocol is %Pn/min
+# (0x0902 ActiveOutputDownSpeed, 0x0906, 0x0914, 0x0915, 0x0917) and only that reading matches the ~35 s
+# measured for a 90 point step on a 20 kW HYD 20KTL-3PH, which implies a stored value around 150.
+_REMOTE_POWER_RAMP_SECONDS_PER_MINUTE = 60.0
 
 
 def _remote_power_option_value(datadict: dict[str, Any], key: str, options: dict[int, str], default: int = 0) -> int:
@@ -305,6 +336,19 @@ def _remote_power_limit(datadict: dict[str, Any], watt_key: str, percent_key: st
     return max(0, min(REMOTE_POWER_LIMIT_MAX, round(percent * 10))), source
 
 
+def _remote_power_record_expected(datadict: dict[str, Any], bits: int, export_limit: int, import_limit: int) -> None:
+    """Record what this write puts in 0x1105-0x1107 so the read-back can be judged against it.
+
+    The sequence mark is re-armed only when the expected values change: the heartbeat writes on every
+    polling group's cycle, so re-arming on every write would leave the verdict permanently "pending".
+    """
+    expected = {"bits": bits, "export_pct": export_limit / 10, "import_pct": import_limit / 10}
+    if datadict.get(_REMOTE_POWER_EXPECTED) != expected:
+        datadict[_REMOTE_POWER_EXPECTED] = expected
+        # whatever read-back sits in datadict now predates this write - demand a newer one before judging
+        datadict[_REMOTE_POWER_EXPECTED_SEQ] = int(datadict.get(_REMOTE_POWER_READBACK_SEQ, 0))
+
+
 def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: dict[str, Any]) -> dict[str, Any]:
     """Build the atomic write for the RWV remote power control block starting at 0x1105.
 
@@ -351,7 +395,15 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
                 f"Sofar remote power: Full write mode needs the 0x1108-0x110C read-backs, missing {missing} - writing 0x1105-0x1107 only",
             )
         else:
-            _remote_power_warn(datadict, "write_mode", None)
+            # Short is the only payload proven to work on a HYD 20KTL-3PH, and Full re-sends 0x110C, which
+            # the protocol calls "not used, readable" - a plausible reason for an inverter to reject the write.
+            _remote_power_warn(
+                datadict,
+                "write_mode",
+                "Sofar remote power: Full write mode selected - it re-sends 0x1108-0x110C including 0x110C "
+                '("not used" per protocol). If the limits do not take effect, check "Remote: Read-back Matches" '
+                "and switch back to Short.",
+            )
             data += [
                 (REGISTER_S16, round(float(datadict["reactive_power_setting"]) * 10)),  # 0x1108
                 (REGISTER_S16, round(float(datadict["power_factor_setting"]) * 100)),  # 0x1109
@@ -359,6 +411,8 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
                 (REGISTER_U16, round(float(datadict["reactive_power_response_time"]) * 10)),  # 0x110B
                 (REGISTER_S16, round(float(datadict["svg_fixed_reactive_power"]) * 10)),  # 0x110C
             ]
+    else:
+        _remote_power_warn(datadict, "write_mode", None)
 
     # Publish what was actually sent - see the "Remote: Applied ..." computed sensors
     datadict["remote_power_applied_export_pct"] = export_limit / 10
@@ -367,6 +421,7 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
     datadict["remote_power_applied_import_w"] = round(import_limit / REMOTE_POWER_LIMIT_MAX * rated_w) if rated_w else None
     datadict["remote_power_limit_source"] = export_src if export_src == import_src else f"export: {export_src}, import: {import_src}"
     datadict["remote_power_conflict"] = _remote_power_conflict(datadict, bits)
+    _remote_power_record_expected(datadict, bits, export_limit, import_limit)
 
     if bits == 0 and not release:  # user selected Disabled: stop repeating, the write above already released
         autorepeat_stop(datadict, "remote_power_control_trigger")
@@ -393,9 +448,16 @@ def _remote_power_conflict(datadict: dict[str, Any], bits: int) -> str:
     conflicts = []
     if datadict.get("charger_use_mode") == "Passive Mode":
         conflicts.append("Energy Storage Mode is Passive Mode")
-    grid_power = datadict.get("passive_mode_grid_power")
-    if grid_power not in (None, 0):
-        conflicts.append(f"Passive: Desired Grid Power is {grid_power} W")
+    # The register is S32 Watts, but a local number write leaves a float in datadict while the 0x1187
+    # read-back leaves an int. Without normalising, the state alternates between "-14500.0 W" and
+    # "-14500 W", which churns history and defeats the message-text dedup in _remote_power_warn.
+    try:
+        grid_power = datadict.get("passive_mode_grid_power")
+        grid_power_w = None if grid_power is None else int(round(float(grid_power)))
+    except (TypeError, ValueError):
+        grid_power_w = None
+    if grid_power_w:  # covers None and 0, and keeps a rounded -0.4 from rendering as "0 W"
+        conflicts.append(f"Passive: Desired Grid Power is {grid_power_w} W")
     if not conflicts:
         _remote_power_warn(datadict, "conflict", None)
         return "None"
@@ -415,6 +477,90 @@ def value_function_remote_power_autorepeat_remaining(initval: Any, descr: Any, d
 def value_function_remote_power_echo(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
     """Echo the value the last remote power write recorded under this sensor's own key."""
     return datadict.get(descr.key)
+
+
+def value_function_remote_power_readback(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+    """One state summarising what the inverter currently holds in 0x1105-0x110C.
+
+    Reads the existing internal read-back sensors out of datadict rather than declaring registers of its
+    own: sensor.py keys holdingRegs by address, so a second descriptor on an already declared address is
+    dropped ("holding register already used") and would never be decoded.
+    """
+    parts: list[str] = []
+    for label, key, fmt in _REMOTE_POWER_READBACK_FIELDS:
+        value = datadict.get(key)
+        if value is None:
+            parts.append(f"{label}=?")
+            continue
+        try:
+            parts.append(f"{label}={fmt.format(float(value))}")
+        except (TypeError, ValueError):
+            parts.append(f"{label}={value}")
+    return " ".join(parts)[:MAX_LENGTH_STATE_STATE]
+
+
+def _remote_power_readback_pct(datadict: dict[str, Any], key: str) -> float | None:
+    """One 0.1 % scaled read-back out of datadict as a float, or None when unavailable."""
+    value = datadict.get(key)
+    if value is None:
+        return None
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def value_function_remote_power_readback_match(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+    """Compare the 0x1105-0x1107 read-back against what the last remote power write sent."""
+    expected = datadict.get(_REMOTE_POWER_EXPECTED)
+    if not isinstance(expected, dict):
+        return "unknown"  # the button has never been pressed
+    if int(datadict.get(_REMOTE_POWER_READBACK_SEQ, 0)) <= int(datadict.get(_REMOTE_POWER_EXPECTED_SEQ, 0)):
+        return "pending read-back"  # the block has not been re-read since these values changed
+    bits = datadict.get("power_control")
+    export_pct = _remote_power_readback_pct(datadict, "active_power_export_limit")
+    import_pct = _remote_power_readback_pct(datadict, "active_power_import_limit")
+    if bits is None or export_pct is None or import_pct is None:
+        return "unknown"  # the block read is failing
+    problems: list[str] = []
+    if int(bits) != int(expected["bits"]):
+        problems.append(f"0x1105 holds {int(bits)}, sent {int(expected['bits'])}")
+    if abs(export_pct - float(expected["export_pct"])) > 0.05:  # both are exact 0.1 % steps: float safety only
+        problems.append(f"0x1106 holds {export_pct:.1f} %, sent {float(expected['export_pct']):.1f} %")
+    if abs(import_pct - float(expected["import_pct"])) > 0.05:
+        problems.append(f"0x1107 holds {import_pct:.1f} %, sent {float(expected['import_pct']):.1f} %")
+    if not problems:
+        return "yes"
+    return ("no: " + "; ".join(problems))[:MAX_LENGTH_STATE_STATE]
+
+
+def _remote_power_limit_speed(datadict: dict[str, Any]) -> float | None:
+    """The stored 0x110A change rate in %Pn/min, or None when unavailable or not a usable rate."""
+    speed = datadict.get("active_power_limit_speed")
+    if speed is None:
+        return None
+    try:
+        speed_f = float(speed)
+    except (TypeError, ValueError):
+        return None
+    return speed_f if speed_f > 0 else None
+
+
+def value_function_remote_power_ramp_time(initval: Any, descr: Any, datadict: dict[str, Any]) -> float | None:
+    """Seconds 0x110A needs for a 0 -> 100 % swing. Needs no rated power, so it works with 0x06ED at 0."""
+    speed_f = _remote_power_limit_speed(datadict)
+    if speed_f is None:
+        return None
+    return round(100.0 * _REMOTE_POWER_RAMP_SECONDS_PER_MINUTE / speed_f, 1)
+
+
+def value_function_remote_power_ramp_rate(initval: Any, descr: Any, datadict: dict[str, Any]) -> float | None:
+    """0x110A as W/s: a low stored value is why a new limit can appear to do nothing for minutes."""
+    speed_f = _remote_power_limit_speed(datadict)
+    rated_w = _remote_power_rated_w(datadict)
+    if speed_f is None or not rated_w:
+        return None
+    return round(rated_w * speed_f / 100.0 / _REMOTE_POWER_RAMP_SECONDS_PER_MINUTE, 1)
 
 
 def value_function_passive_timeout(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
@@ -12717,6 +12863,61 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:alert-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        # what the inverter itself holds, e.g.
+        # "0x1105=1 0x1106=10.0% 0x1107=100.0% 0x1108=0.0% 0x1109=1.00 0x110A=150 0x110B=1.0s 0x110C=0.0"
+        name="Remote: Register Read-back",
+        key="remote_power_readback",
+        value_function=value_function_remote_power_readback,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        depends_on=[
+            "power_control",
+            "active_power_export_limit",
+            "active_power_import_limit",
+            "reactive_power_setting",
+            "power_factor_setting",
+            "active_power_limit_speed",
+            "reactive_power_response_time",
+            "svg_fixed_reactive_power",
+        ],
+        icon="mdi:eye-check-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        # "yes" / "no: 0x1106 holds 100.0 %, sent 10.0 %" / "pending read-back" / "unknown"
+        name="Remote: Read-back Matches",
+        key="remote_power_readback_match",
+        value_function=value_function_remote_power_readback_match,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        depends_on=["power_control", "active_power_export_limit", "active_power_import_limit"],
+        icon="mdi:clipboard-check-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remote: Full-Scale Ramp Time",
+        key="remote_power_ramp_time",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_function=value_function_remote_power_ramp_time,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        depends_on=["active_power_limit_speed"],
+        icon="mdi:timer-sand",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remote: Ramp Rate",
+        key="remote_power_ramp_rate",
+        native_unit_of_measurement="W/s",  # no HA device class exists for a power rate
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_function=value_function_remote_power_ramp_rate,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=HYBRID | PV | AC,
+        depends_on=["active_power_limit_speed", "ratedpower_inverter", "remote_power_rated_power_override"],
+        icon="mdi:speedometer",
     ),
     # ---- G3 control read-back companion sensors (internal) ----
     SofarModbusSensorEntityDescription(
