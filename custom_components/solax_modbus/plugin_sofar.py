@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from time import time
 from typing import Any
@@ -132,10 +132,10 @@ async def async_read_serialnr(hub: Any, address: int, swapbytes: bool) -> str | 
                 res = str(ba, "ascii")  # convert back to string
             hub.seriesnumber = res
     except Exception:
-        _LOGGER.warning(f"{hub.name}: attempt to read serialnumber failed at 0x{address:x}", exc_info=True)
+        _LOGGER.warning("%s: attempt to read serialnumber failed at 0x%x", hub.name, address, exc_info=True)
     if not res:
-        _LOGGER.warning(f"{hub.name}: reading serial number from address 0x{address:x} failed; other address may succeed")
-    _LOGGER.info(f"Read {hub.name} 0x{address:x} serial number: {res}, swapped: {swapbytes}")
+        _LOGGER.warning("%s: reading serial number from address 0x%x failed; other address may succeed", hub.name, address)
+    _LOGGER.info("Read %s 0x%x serial number: %s, swapped: %s", hub.name, address, res, swapbytes)
     # return 'SP1ES2'
     return res
 
@@ -182,7 +182,7 @@ def validate_register_data(descr: Any, value: Any, datadict: dict[str, Any]) -> 
         datadict[_REMOTE_POWER_READBACK_SEQ] = int(datadict.get(_REMOTE_POWER_READBACK_SEQ, 0)) + 1
     if value == 0xFFFF and descr.key in _UNINITIALIZED_SELECT_DEFAULTS:
         normalized = _UNINITIALIZED_SELECT_DEFAULTS[descr.key]
-        _LOGGER.debug(f"Sofar: normalizing uninitialized register value for {descr.key} from 65535 to {normalized}")
+        _LOGGER.debug("Sofar: normalizing uninitialized register value for %s from 65535 to %s", descr.key, normalized)
         return normalized
     return value
 
@@ -1111,7 +1111,7 @@ NUMBER_TYPES = [
         native_min_value=0,
         native_max_value=21600,
         native_step=1,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
         prevent_update=True,
         write_method=WRITE_DATA_LOCAL,
         entity_registry_enabled_default=False,
@@ -4113,7 +4113,19 @@ SELECT_TYPES = [
             1: "Enabled - Feed-in limitation",
             2: "Enabled - 3-phase limit",
         },
-        allowedtypes=HYBRID | PV,
+        allowedtypes=HYBRID | PV | X3,
+        write_method=WRITE_DATA_LOCAL,
+        icon="mdi:transmission-tower-import",
+    ),
+    SofarModbusSelectEntityDescription(
+        name="FeedIn: Limitation Mode",
+        key="feedin_limitation_mode",
+        register_data_type=REGISTER_U16,
+        option_dict={
+            0: "Disabled",
+            1: "Enabled - Feed-in limitation",
+        },
+        allowedtypes=HYBRID | PV | X1,
         write_method=WRITE_DATA_LOCAL,
         icon="mdi:transmission-tower-import",
     ),
@@ -4274,7 +4286,7 @@ SELECT_TYPES = [
             1: "Turn On, Prohibit Cold Start",
             2: "Turn On, Enable Cold Start",
         },
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
         icon="mdi:power-plug-off",
     ),
     # Does not work. 0x1035, 0x1036, and 0x1037 have to be written in one single chunk
@@ -4325,7 +4337,23 @@ SELECT_TYPES = [
             6: "Generator mode",
             7: "Feed-In Priority Mode",
         },
-        allowedtypes=HYBRID,
+        allowedtypes=HYBRID | X3,
+        write_method=WRITE_MULTISINGLE_MODBUS,
+        icon="mdi:battery-charging-60",
+    ),
+    SofarModbusSelectEntityDescription(
+        name="Energy Storage Mode",
+        key="charger_use_mode",
+        register=0x1110,
+        option_dict={
+            0: "Self Use",
+            1: "Time of Use",
+            2: "Timing Mode",
+            3: "Passive Mode",
+            4: "Peak Cut Mode",
+            5: "Off-grid Mode",
+        },
+        allowedtypes=HYBRID | X1,
         write_method=WRITE_MULTISINGLE_MODBUS,
         icon="mdi:battery-charging-60",
     ),
@@ -4848,7 +4876,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         key="software_version",
         register=0x44F,
         register_data_type=REGISTER_STR,
-        wordcount=12,
+        wordcount=4,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV,
     ),
@@ -5414,11 +5442,10 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         register=0x504,
-        # newblock = True,
         register_data_type=REGISTER_S16,
         scale=0.01,
         rounding=2,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
     ),
     SofarModbusSensorEntityDescription(
         name="Reactive Power Off-Grid Total",
@@ -5430,7 +5457,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         scale=0.01,
         rounding=2,
         entity_registry_enabled_default=False,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
     ),
     SofarModbusSensorEntityDescription(
         name="Apparent Power Off-Grid Total",
@@ -5442,7 +5469,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register_data_type=REGISTER_S16,
         scale=0.01,
         rounding=2,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
     ),
     SofarModbusSensorEntityDescription(
         name="Off-Grid Frequency",
@@ -5452,7 +5479,18 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register=0x507,
         scale=0.01,
         rounding=2,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Off-Grid Voltage",
+        key="offgrid_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        register=0x50A,
+        scan_group=SCAN_GROUP_FAST,
+        scale=0.1,
+        rounding=1,
+        allowedtypes=HYBRID | X1 | EPS,
     ),
     SofarModbusSensorEntityDescription(
         name="Off-Grid Voltage L1",
@@ -5466,6 +5504,17 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
+        name="Off-Grid Current Output",
+        key="offgrid_current_output",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        device_class=SensorDeviceClass.CURRENT,
+        register=0x50B,
+        register_data_type=REGISTER_S16,
+        scale=0.01,
+        rounding=2,
+        allowedtypes=HYBRID | X1 | EPS,
+    ),
+    SofarModbusSensorEntityDescription(
         name="Off-Grid Current Output L1",
         key="offgrid_current_output_l1",
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
@@ -5477,6 +5526,17 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
+        name="Off-Grid Active Power Output",
+        key="offgrid_active_power_output",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        register=0x50C,
+        register_data_type=REGISTER_S16,
+        scale=0.01,
+        rounding=2,
+        allowedtypes=HYBRID | X1 | EPS,
+    ),
+    SofarModbusSensorEntityDescription(
         name="Off-Grid Active Power Output L1",
         key="offgrid_active_power_output_l1",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -5486,6 +5546,18 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         scale=0.01,
         rounding=2,
         allowedtypes=HYBRID | X3 | EPS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Off-Grid Reactive Power Output",
+        key="offgrid_reactive Power_output",
+        native_unit_of_measurement=UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
+        device_class=SensorDeviceClass.REACTIVE_POWER,
+        register=0x50D,
+        register_data_type=REGISTER_S16,
+        scale=0.01,
+        rounding=2,
+        entity_registry_enabled_default=False,
+        allowedtypes=HYBRID | X1 | EPS,
     ),
     SofarModbusSensorEntityDescription(
         name="Off-Grid Reactive Power Output L1",
@@ -5500,6 +5572,17 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
+        name="Off-Grid Apparent Power Output",
+        key="offgrid_apparent_power_output",
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        register=0x50E,
+        register_data_type=REGISTER_S16,
+        scale=0.01,
+        rounding=2,
+        allowedtypes=HYBRID | X1 | EPS,
+    ),
+    SofarModbusSensorEntityDescription(
         name="Off-Grid Apparent Power Output L1",
         key="offgrid_apparent_power_output_l1",
         native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
@@ -5509,6 +5592,16 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         scale=0.01,
         rounding=2,
         allowedtypes=HYBRID | X3 | EPS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Off-Grid LoadPeakRatio",
+        key="offgrid_loadpeakratio",
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        register=0x50F,
+        scale=0.01,
+        rounding=2,
+        allowedtypes=HYBRID | X1 | EPS,
     ),
     SofarModbusSensorEntityDescription(
         name="Off-Grid LoadPeakRatio L1",
@@ -6902,7 +6995,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
             2: "Turn On, Enable Cold Start",
         },
         entity_registry_enabled_default=False,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SofarModbusSensorEntityDescription(
@@ -6910,7 +7003,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         key="passive_eps_wait_time",
         register=0x102A,
         entity_registry_enabled_default=False,
-        allowedtypes=HYBRID | X3 | EPS,
+        allowedtypes=HYBRID | EPS,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SofarModbusSensorEntityDescription(
@@ -13453,6 +13546,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         register=0x9051,
+        suggested_display_precision=3,
         scale=0.001,
         rounding=3,
         allowedtypes=BAT_BTS,
@@ -13464,6 +13558,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         register=0x9069,
+        suggested_display_precision=3,
         scale=0.001,
         rounding=3,
         allowedtypes=BAT_BTS,
@@ -13474,6 +13569,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         register=0x906A,
+        suggested_display_precision=3,
         scale=0.001,
         rounding=3,
         allowedtypes=BAT_BTS,
@@ -13596,7 +13692,7 @@ class battery_config(base_battery_config):
     async def select_battery(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> bool:
         faulty_nr = 0
         payload = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
-        _LOGGER.debug(f"select batt-nr: {batt_nr} batt-pack: {batt_pack_nr} {hex(payload)}")
+        _LOGGER.debug("select batt-nr: %s batt-pack: %s 0x%x", batt_nr, batt_pack_nr, payload)
         await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.bms_inquire_address, payload=payload)
         await asyncio.sleep(0.3)
         self.selected_batt_nr = batt_nr
@@ -13627,7 +13723,7 @@ class battery_config(base_battery_config):
     async def get_batt_pack_sw_version(self, hub: Any, new_data: dict[str, Any], key_prefix: str) -> str | None:
         sw_version_key = key_prefix + "bms_version"
         if not new_data.__contains__(sw_version_key):
-            _LOGGER.info(f"batt pack software version not received {sw_version_key}")
+            _LOGGER.info("batt pack software version not received %s", sw_version_key)
             return None
         return f"BMS: V{new_data[sw_version_key]}"
 
@@ -13668,14 +13764,14 @@ class battery_config(base_battery_config):
         if not inverter_data.isError():
             if inverter_data is not None and not inverter_data.isError():
                 new_value = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")  # type: ignore[attr-defined]  # DataType enum dynamic
-                _LOGGER.debug(f"check_battery_on_end: {hex(new_value)} {hex(compare_value)}")
+                _LOGGER.debug("check_battery_on_end: 0x%x 0x%x", new_value, compare_value)
             if new_value == compare_value:
                 serial_key = key_prefix + "pack_serial_number"
                 if not new_data.__contains__(serial_key):
-                    _LOGGER.info(f"batt pack serial not received {serial_key}")
+                    _LOGGER.info("batt pack serial not received %s", serial_key)
                     return False
                 serial = new_data[serial_key]
-                _LOGGER.debug(f"batt pack serial: {serial}")
+                _LOGGER.debug("batt pack serial: %s", serial)
                 return bool(serial == self.batt_pack_serials[batt_nr][batt_pack_nr])
             else:
                 return False
@@ -13690,7 +13786,7 @@ class battery_config(base_battery_config):
                 self.number_cels_in_parallel = (val >> 8) & 0xFF  # high byte
                 self.number_strings = val & 0xFF  # low byte
         except Exception:
-            _LOGGER.warning(f"{hub.name}: attempt to read BaPack number failed at 0x{self.bapack_number_address:x}", exc_info=True)
+            _LOGGER.warning("%s: attempt to read BaPack number failed at 0x%x", hub.name, self.bapack_number_address, exc_info=True)
 
     async def init_batt_pack_serials(self, hub: Any) -> None:
         retry = 0
@@ -13711,7 +13807,7 @@ class battery_config(base_battery_config):
                     # type narrowing: serial is str | None, dict expects str
                     self.batt_pack_serials[batt_nr][batt_pack_nr] = serial  # type: ignore[assignment]  # serial can be None
 
-        _LOGGER.info(f"serials {self.batt_pack_serials}")
+        _LOGGER.info("serials %s", self.batt_pack_serials)
 
     async def _determinate_batt_pack_serial(self, hub: Any) -> str | None:
         inverter_data = await hub.async_read_holding_registers(
@@ -13738,10 +13834,10 @@ class sofar_plugin(plugin_base):
     """
 
     async def async_determineInverterType(self, hub: Any, configdict: dict[str, Any]) -> int:
-        _LOGGER.info(f"{hub.name}: trying to determine inverter type")
+        _LOGGER.info("%s: trying to determine inverter type", hub.name)
         seriesnumber = await async_read_serialnr(hub, 0x445, swapbytes=False)
         if not seriesnumber:
-            _LOGGER.error(f"{hub.name}: cannot find serial number, even not for other Inverter")
+            _LOGGER.error("%s: cannot find serial number, even not for other Inverter", hub.name)
             seriesnumber = "unknown"
 
         # derive invertertype from seriiesnumber
@@ -13802,7 +13898,7 @@ class sofar_plugin(plugin_base):
 
         else:
             invertertype = 0
-            _LOGGER.error(f"unrecognized {hub.name} inverter type - serial number : {seriesnumber}")
+            _LOGGER.error("unrecognized %s inverter type - serial number : %s", hub.name, seriesnumber)
 
         if invertertype > 0:
             read_eps = configdict.get(CONF_READ_EPS, DEFAULT_READ_EPS)
@@ -13838,6 +13934,22 @@ class sofar_plugin(plugin_base):
 
     def getHardwareVersion(self, new_data: dict[str, Any]) -> str | None:
         return new_data.get("hardware_version", None)
+
+    def localDataCallback(self, hub: Any) -> bool:
+        parallel_setting = hub.data.get("parallel_masterslave", "Slave")
+        if parallel_setting == "Master":
+            system_limit_w = hub.inverterPowerKw * 1000
+            number_entity = hub.numberEntities.get("feedin_max_power")
+            if number_entity:
+                number_entity._attr_native_min_value = 0
+                number_entity._attr_native_max_value = system_limit_w
+                number_entity.entity_description = replace(
+                    number_entity.entity_description,
+                    native_min_value=0,
+                    native_max_value=system_limit_w,
+                )
+                _LOGGER.info("Parallel Master: Set feedin_max_power limit to 0-%sW (inverter_power_kw=%skW)", system_limit_w, hub.inverterPowerKw)
+        return True
 
 
 plugin_instance = sofar_plugin(

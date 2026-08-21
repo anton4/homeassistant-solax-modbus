@@ -116,18 +116,21 @@ def is_entity_enabled(
     if entity_id:
         entity_entry = registry.async_get(entity_id)
         if entity_entry is None:
-            _LOGGER.debug(f"{hub.name}: is_entity_enabled: {entity_id} has no registry entry, returning False.")
+            _LOGGER.debug("%s: is_entity_enabled: %s has no registry entry, returning False.", hub.name, entity_id)
             return False
         if entity_entry.disabled:
-            _LOGGER.debug(f"{hub.name}: is_entity_enabled: {entity_id} is disabled, returning False.")
+            _LOGGER.debug("%s: is_entity_enabled: %s is disabled, returning False.", hub.name, entity_id)
             return False
-        _LOGGER.debug(f"{hub.name}: is_entity_enabled: {entity_id} is enabled, returning True.")
+        _LOGGER.debug("%s: is_entity_enabled: %s is enabled, returning True.", hub.name, entity_id)
         return True  # Found an enabled entity, no need to check further
 
-    _LOGGER.info(f"{hub.name}: entity {unique_id} not found in registry")
+    _LOGGER.info("%s: entity %s not found in registry", hub.name, unique_id)
     if use_default:
         _LOGGER.debug(
-            f"{hub.name}: is_entity_enabled: {unique_id} not found in registry, returning default {descriptor.entity_registry_enabled_default}."
+            "%s: is_entity_enabled: %s not found in registry, returning default %s.",
+            hub.name,
+            unique_id,
+            descriptor.entity_registry_enabled_default,
         )
         return bool(descriptor.entity_registry_enabled_default)
     return False
@@ -138,7 +141,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         hub_name = entry.data[CONF_NAME]  # old style - remove soon
     else:
         hub_name = entry.options[CONF_NAME]  # new format
-    _LOGGER.info(f"===== {hub_name}: async_setup_entry called =====")
+    _LOGGER.info("===== %s: async_setup_entry called =====", hub_name)
     hub = hass.data[DOMAIN][hub_name]["hub"]
 
     entities: list[SensorEntity] = []
@@ -159,16 +162,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 dev_registry.async_update_device(device.id, sw_version=sw_version, hw_version=hw_version)
         return True
 
+    # Entity names never carry the inverter suffix — the device name provides that context.
     inverter_name_suffix = ""
-    # Test: Comment out to prevent adding inverter suffix to Energy Dashboard sensors
-    # if hub.inverterNameSuffix is not None and hub.inverterNameSuffix != "":
-    #     inverter_name_suffix = hub.inverterNameSuffix + " "
 
     # Check if hub initialization is complete
     if hub.device_info is None:
         _LOGGER.error(
-            f"{hub_name}: sensor setup aborted - hub device_info not initialized. "
-            "This can happen if hub initialization failed or is still in progress."
+            "%s: sensor setup aborted - hub device_info not initialized. This can happen if hub initialization failed or is still in progress.",
+            hub_name,
         )
         return False
 
@@ -205,340 +206,203 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         battery_config = plugin.BATTERY_CONFIG
         batt_pack_quantity = await battery_config.get_batt_pack_quantity(hub)
         batt_quantity = await battery_config.get_batt_quantity(hub)
-        _LOGGER.info(f"batt_pack_quantity: {batt_pack_quantity}, batt_quantity: {batt_quantity}")
+        _LOGGER.info("batt_pack_quantity: %s, batt_quantity: %s", batt_pack_quantity, batt_quantity)
 
-        batt_nr = 0
-        for batt_pack_nr in range(0, batt_pack_quantity, 1):
-            if not await battery_config.select_battery(hub, batt_nr, batt_pack_nr):
-                _LOGGER.warning(f"cannot select batt_nr: {batt_nr}, batt_pack_nr: {batt_pack_nr}")
-                continue
-
-            batt_pack_id = f"battery_1_{batt_pack_nr + 1}"
-            dev_registry = dr.async_get(hass)
-            device = dev_registry.async_get_device(identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, batt_pack_id)}))
-            if device is not None:
-                _LOGGER.debug(f"batt pack serial: {device.serial_number}")
-                await battery_config.init_batt_pack(hub, device.serial_number)
-
-            batt_pack_serial = await battery_config.get_batt_pack_serial(hub, batt_nr, batt_pack_nr)
-            if batt_pack_serial is None:
-                _LOGGER.warning(f"cannot get serial for batt_nr: {batt_nr}, batt_pack_nr: {batt_pack_nr}")
-                await battery_config.init_batt_pack_serials(hub)
-                batt_pack_serial = await battery_config.get_batt_pack_serial(hub, batt_nr, batt_pack_nr)
-                if batt_pack_serial is None:
+        for batt_nr in range(0, batt_quantity or 1, 1):
+            for batt_pack_nr in range(0, batt_pack_quantity, 1):
+                if not await battery_config.select_battery(hub, batt_nr, batt_pack_nr):
+                    _LOGGER.warning("cannot select batt_nr: %s, batt_pack_nr: %s", batt_nr, batt_pack_nr)
                     continue
 
-            device_info_battery = DeviceInfo(
-                identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, batt_pack_id)}),
-                name=hub.plugin.plugin_name + f" Battery {batt_nr + 1}/{batt_pack_nr + 1}",
-                manufacturer=hub.plugin.plugin_manufacturer,
-                serial_number=batt_pack_serial,
-                via_device=cast(tuple[str, str], (DOMAIN, hub_name, INVERTER_IDENT)),
-            )
-
-            name_prefix = battery_config.battery_sensor_name_prefix.replace("{batt-nr}", str(batt_nr + 1)).replace("{pack-nr}", str(batt_pack_nr + 1))
-            key_prefix = battery_config.battery_sensor_key_prefix.replace("{batt-nr}", str(batt_nr + 1)).replace("{pack-nr}", str(batt_pack_nr + 1))
-
-            async def readPreparation(old_data: Any, key_prefix: str = key_prefix, batt_nr: int = 0, batt_pack_nr: int = batt_pack_nr) -> Any:
-                await battery_config.select_battery(hub, batt_nr, batt_pack_nr)
-                return await battery_config.check_battery_on_start(hub, old_data, key_prefix, batt_nr, batt_pack_nr)
-
-            async def readFollowUpBattery(
-                old_data: Any,
-                new_data: Any,
-                key_prefix: str = key_prefix,
-                hub_name: str = hub_name,
-                batt_pack_id: str = batt_pack_id,
-                batt_nr: int = batt_nr,
-                batt_pack_nr: int = batt_pack_nr,
-            ) -> bool:
+                batt_pack_id = f"battery_{batt_nr + 1}_{batt_pack_nr + 1}"
                 dev_registry = dr.async_get(hass)
                 device = dev_registry.async_get_device(identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, batt_pack_id)}))
                 if device is not None:
-                    batt_pack_model = await battery_config.get_batt_pack_model(hub)
-                    batt_pack_sw_version = await battery_config.get_batt_pack_sw_version(hub, new_data, key_prefix)
-                    dev_registry.async_update_device(device.id, sw_version=batt_pack_sw_version, model=batt_pack_model)
-                result = await battery_config.check_battery_on_end(hub, old_data, new_data, key_prefix, batt_nr, batt_pack_nr)
-                return bool(result)
+                    _LOGGER.debug("batt pack serial: %s", device.serial_number)
+                    await battery_config.init_batt_pack(hub, device.serial_number)
 
-            entityToList(
-                hub,
-                hub_name,
-                entities,
-                initial_groups,
-                computedRegs,
-                device_info_battery,
-                battery_config.battery_sensor_type,
-                name_prefix,
-                key_prefix,
-                readPreparation,
-                readFollowUpBattery,
-            )
+                batt_pack_serial = await battery_config.get_batt_pack_serial(hub, batt_nr, batt_pack_nr)
+                if batt_pack_serial is None:
+                    _LOGGER.warning("cannot get serial for batt_nr: %s, batt_pack_nr: %s", batt_nr, batt_pack_nr)
+                    await battery_config.init_batt_pack_serials(hub)
+                    batt_pack_serial = await battery_config.get_batt_pack_serial(hub, batt_nr, batt_pack_nr)
+                    if batt_pack_serial is None:
+                        continue
+
+                # Battery pack device name = hub name + pack identity (unique per config entry);
+                # entity names never repeat it, HA composes the friendly name.
+                device_info_battery = DeviceInfo(
+                    identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, batt_pack_id)}),
+                    name=f"{hub_name} Battery {batt_nr + 1}/{batt_pack_nr + 1}",
+                    manufacturer=hub.plugin.plugin_manufacturer,
+                    serial_number=batt_pack_serial,
+                    via_device=cast(tuple[str, str], (DOMAIN, hub_name, INVERTER_IDENT)),
+                )
+
+                key_prefix = battery_config.battery_sensor_key_prefix.replace("{batt-nr}", str(batt_nr + 1)).replace(
+                    "{pack-nr}", str(batt_pack_nr + 1)
+                )
+
+                async def readPreparation(
+                    old_data: Any, key_prefix: str = key_prefix, batt_nr: int = batt_nr, batt_pack_nr: int = batt_pack_nr
+                ) -> Any:
+                    await battery_config.select_battery(hub, batt_nr, batt_pack_nr)
+                    return await battery_config.check_battery_on_start(hub, old_data, key_prefix, batt_nr, batt_pack_nr)
+
+                async def readFollowUpBattery(
+                    old_data: Any,
+                    new_data: Any,
+                    key_prefix: str = key_prefix,
+                    hub_name: str = hub_name,
+                    batt_pack_id: str = batt_pack_id,
+                    batt_nr: int = batt_nr,
+                    batt_pack_nr: int = batt_pack_nr,
+                ) -> bool:
+                    dev_registry = dr.async_get(hass)
+                    device = dev_registry.async_get_device(identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, batt_pack_id)}))
+                    if device is not None:
+                        batt_pack_model = await battery_config.get_batt_pack_model(hub)
+                        batt_pack_sw_version = await battery_config.get_batt_pack_sw_version(hub, new_data, key_prefix)
+                        dev_registry.async_update_device(device.id, sw_version=batt_pack_sw_version, model=batt_pack_model)
+                    result = await battery_config.check_battery_on_end(hub, old_data, new_data, key_prefix, batt_nr, batt_pack_nr)
+                    return bool(result)
+
+                entityToList(
+                    hub,
+                    hub_name,
+                    entities,
+                    initial_groups,
+                    computedRegs,
+                    device_info_battery,
+                    battery_config.battery_sensor_type,
+                    "",  # entity names never carry the pack prefix — the battery device name provides it
+                    key_prefix,
+                    readPreparation,
+                    readFollowUpBattery,
+                )
 
     hub.computedSensors = computedRegs
     async_add_entities(entities)
     # now the groups are available
     hub.rebuild_blocks(initial_groups)  # , computedRegs) # first time call
-    _LOGGER.info(f"{hub.name}: computedRegs: {hub.computedSensors}")
+    _LOGGER.info("%s: computedRegs: %s", hub.name, hub.computedSensors)
 
     # Energy Dashboard Virtual Device integration (after rebuild_blocks so initial_groups are ready for reading)
     try:
         from .energy_dashboard import (
             create_energy_dashboard_sensors,
+            get_energy_dashboard_coordinator,
             should_create_energy_dashboard_device,
             validate_mapping,
         )
     except Exception as e:
-        _LOGGER.error(f"{hub_name}: Failed to import Energy Dashboard module: {e}", exc_info=True)
+        _LOGGER.error("%s: Failed to import Energy Dashboard module: %s", hub_name, e, exc_info=True)
         # Continue without Energy Dashboard support
     else:
         try:
-            # Check both plugin and plugin_instance (different plugins have different structures)
             plugin_obj = getattr(plugin, "plugin_instance", plugin)
-
             config = entry.options
-            from .const import (
-                CONF_ENERGY_DASHBOARD_DEVICE,
-                DEFAULT_ENERGY_DASHBOARD_DEVICE,
-            )
-
-            # Check if Energy Dashboard is disabled - if so, remove existing entities and device
-            energy_dashboard_enabled = config.get(CONF_ENERGY_DASHBOARD_DEVICE, DEFAULT_ENERGY_DASHBOARD_DEVICE)
-
-            # Handle legacy string values for backward compatibility
-            if isinstance(energy_dashboard_enabled, str):
-                energy_dashboard_enabled = energy_dashboard_enabled != "disabled"
-
-            if not energy_dashboard_enabled:
-                _LOGGER.info(f"{hub_name}: Energy Dashboard disabled - removing existing entities and device")
-                entity_registry = er.async_get(hass)
-                device_registry = dr.async_get(hass)
-                energy_dashboard_entities: list[Any] = []
-
-                # Find Energy Dashboard device identifier (use normalized hub name)
-                energy_dashboard_device = None
-                try:
-                    from .energy_dashboard import create_energy_dashboard_device_info
-
-                    energy_dashboard_device_info = create_energy_dashboard_device_info(hub, hass)
-                    energy_dashboard_device = device_registry.async_get_device(identifiers=energy_dashboard_device_info["identifiers"])
-                except Exception as e:
-                    _LOGGER.debug(f"{hub_name}: Could not build Energy Dashboard device info for removal: {e}")
-
-                if not energy_dashboard_device:
-                    # Fallback: match by name or legacy identifiers (scoped to this hub)
-                    normalized_hub_name = hub_name.lower().replace(" ", "_")
-                    expected_identifier = f"{normalized_hub_name}_energy_dashboard"
-                    for device_entry in device_registry.devices.values():
-                        if device_entry.name == f"{hub_name} Energy Dashboard":
-                            energy_dashboard_device = device_entry
-                            break
-                        for identifier in device_entry.identifiers:
-                            # HA allows 3-tuple identifiers at runtime despite type stubs
-                            identifier_tuple = cast(tuple[str, ...], identifier)
-                            if (
-                                len(identifier_tuple) >= 3
-                                and identifier_tuple[0] == DOMAIN
-                                and identifier_tuple[2] == "ENERGY_DASHBOARD"
-                                and identifier_tuple[1] == expected_identifier
-                            ):
-                                energy_dashboard_device = device_entry
-                                break
-                        if energy_dashboard_device:
-                            break
-
-                # Remove entities tied to the ED device if we found it
-                if energy_dashboard_device:
-                    for entity_entry in entity_registry.entities.values():
-                        if entity_entry.device_id == energy_dashboard_device.id:
-                            energy_dashboard_entities.append(entity_entry.entity_id)
-                            _LOGGER.debug(f"{hub_name}: Found Energy Dashboard entity to remove: {entity_entry.entity_id}")
-
-                # Fallback: remove any ED entities by unique_id prefix
-                hub_unique_prefix = f"{hub_name} Energy Dashboard_"
-                for entity_entry in entity_registry.entities.values():
-                    if (
-                        entity_entry.platform == DOMAIN
-                        and entity_entry.unique_id
-                        and entity_entry.unique_id.startswith(hub_unique_prefix)
-                        and entity_entry.entity_id not in energy_dashboard_entities
-                    ):
-                        energy_dashboard_entities.append(entity_entry.entity_id)
-                        _LOGGER.debug(f"{hub_name}: Found Energy Dashboard entity to remove: {entity_entry.entity_id}")
-
-                if energy_dashboard_entities:
-                    _LOGGER.info(f"{hub_name}: Removing {len(energy_dashboard_entities)} Energy Dashboard entities")
-                    for entity_id in energy_dashboard_entities:
-                        entity_registry.async_remove(entity_id)
-                    import asyncio
-
-                    await asyncio.sleep(0.1)
-
-                if energy_dashboard_device:
-                    _LOGGER.info(f"{hub_name}: Removing Energy Dashboard device: {energy_dashboard_device.name}")
-                    device_registry.async_remove_device(energy_dashboard_device.id)
-                    await asyncio.sleep(0.1)
-            elif getattr(plugin_obj, "ENERGY_DASHBOARD_MAPPING", None) is not None:
-                mapping = plugin_obj.ENERGY_DASHBOARD_MAPPING
-                if mapping is not None:
-                    _LOGGER.info(f"{hub_name}: Energy Dashboard mapping found for plugin: {mapping.plugin_name}")
-
-                validation_result = validate_mapping(mapping)
-                if not validation_result:
-                    _LOGGER.error(f"{hub_name}: Invalid Energy Dashboard mapping, skipping device creation")
-                else:
-                    result = await should_create_energy_dashboard_device(hub, config, hass, _LOGGER, initial_groups)
-                    if result:
-                        # Check if hub initialization is complete
-                        if hub.device_info is None:
-                            _LOGGER.error(
-                                f"{hub_name}: Energy Dashboard setup aborted - hub device_info not initialized. "
-                                "This can happen if hub initialization failed or is still in progress."
-                            )
-                        else:
-                            start_time = time.time()
-                            energy_dashboard_sensors = await create_energy_dashboard_sensors(hub, mapping, hass, config)
-                            energy_dashboard_entities = []
-                            energy_dashboard_platform_name = f"{hub_name} Energy Dashboard"
-                            if energy_dashboard_sensors:
-                                _LOGGER.info(f"{hub_name}: Creating {len(energy_dashboard_sensors)} Energy Dashboard sensors")
-                                entityToList(
-                                    hub,
-                                    energy_dashboard_platform_name,
-                                    energy_dashboard_entities,
-                                    initial_groups,
-                                    computedRegs,
-                                    hub.device_info,
-                                    energy_dashboard_sensors,
-                                    inverter_name_suffix,
-                                    "",
-                                    None,
-                                    readFollowUp,
-                                )
-
-                            # Add Energy Dashboard entities to main entities list and register them
-                            if energy_dashboard_entities:
-                                _LOGGER.info(f"{hub_name}: Registering {len(energy_dashboard_entities)} Energy Dashboard entities")
-                                entities.extend(energy_dashboard_entities)
-                                async_add_entities(energy_dashboard_entities)
-
-                            elapsed_time = time.time() - start_time
-                            _LOGGER.debug(
-                                f"{hub_name}: Energy Dashboard device creation completed in {elapsed_time:.3f}s ({len(energy_dashboard_entities)} entities)"
-                            )
-
-                        async def async_refresh_energy_dashboard_entities() -> None:
-                            energy_dashboard_enabled = config.get(CONF_ENERGY_DASHBOARD_DEVICE, DEFAULT_ENERGY_DASHBOARD_DEVICE)
-                            if isinstance(energy_dashboard_enabled, str):
-                                energy_dashboard_enabled = energy_dashboard_enabled != "disabled"
-                            if not energy_dashboard_enabled:
-                                return
-
-                            energy_dashboard_sensors = await create_energy_dashboard_sensors(hub, mapping, hass, config)
-                            if not energy_dashboard_sensors:
-                                return
-
-                            domain_data = hass.data.setdefault(DOMAIN, {})
-                            hub_entry = domain_data.setdefault(hub_name, {})
-                            pm_inverter_count = hub.data.get("pm_inverter_count")
-                            expected_slaves = max(pm_inverter_count - 1, 0) if pm_inverter_count is not None else None
-                            last_slave_count = hub_entry.get("energy_dashboard_last_slave_hub_count")
-                            if expected_slaves and expected_slaves > 0:
-                                hub_entry["energy_dashboard_refresh_pending"] = last_slave_count is None or last_slave_count < expected_slaves
-                            else:
-                                hub_entry["energy_dashboard_refresh_pending"] = False
-
-                            energy_dashboard_entities: list[Any] = []
-                            desired_keys: set[str] = {descr.key for descr in energy_dashboard_sensors}
-                            energy_dashboard_platform_name = f"{hub_name} Energy Dashboard"
-                            for newdescr in energy_dashboard_sensors:
-                                existing_sensor = hub.sensorEntities.get(newdescr.key)
-                                if existing_sensor and getattr(existing_sensor, "hass", None) is not None:
-                                    hub.sensorDescriptions[newdescr.key] = newdescr
-                                    existing_sensor.entity_description = newdescr
-                                    if hasattr(existing_sensor, "_riemann_mapping") and getattr(newdescr, "_riemann_mapping", None):
-                                        existing_sensor._riemann_mapping = newdescr._riemann_mapping
-                                        existing_sensor._filter_function = (
-                                            newdescr._riemann_mapping.filter_function if newdescr._riemann_mapping else None
-                                        ) or (lambda v: v)
-                                    if newdescr.register < 0 and newdescr.value_function:
-                                        hub.computedSensors[newdescr.key] = newdescr
-                                    continue
-                                if existing_sensor:
-                                    hub.sensorEntities.pop(newdescr.key, None)
-                                    hub.sensorDescriptions.pop(newdescr.key, None)
-                                    hub.computedSensors.pop(newdescr.key, None)
-
-                                entityToListSingle(
-                                    hub,
-                                    energy_dashboard_platform_name,
-                                    energy_dashboard_entities,
-                                    initial_groups,
-                                    hub.computedSensors,
-                                    hub.device_info,
-                                    newdescr,
-                                    None,
-                                    readFollowUp,
-                                )
-
-                            if energy_dashboard_entities:
-                                _LOGGER.info(f"{hub_name}: Registering {len(energy_dashboard_entities)} refreshed Energy Dashboard entities")
-                                entities.extend(energy_dashboard_entities)
-                                async_add_entities(energy_dashboard_entities)
-
-                            from .energy_dashboard import (
-                                ED_SWITCH_GRID_TO_BATTERY,
-                                ED_SWITCH_HOME_CONSUMPTION,
-                                ED_SWITCH_PV_VARIANTS,
-                                get_energy_dashboard_switch_state,
-                            )
-
-                            pv_state = get_energy_dashboard_switch_state(hub, ED_SWITCH_PV_VARIANTS)
-                            home_state = get_energy_dashboard_switch_state(hub, ED_SWITCH_HOME_CONSUMPTION)
-                            grid_state = get_energy_dashboard_switch_state(hub, ED_SWITCH_GRID_TO_BATTERY)
-                            allow_remove_pv = pv_state is False
-                            allow_remove_home = home_state is False
-                            allow_remove_grid = grid_state is False
-
-                            if allow_remove_pv or allow_remove_home or allow_remove_grid:
-                                entity_registry = er.async_get(hass)
-                                existing_keys = set(hub.sensorEntities.keys()) | set(hub.sensorDescriptions.keys())
-                                for key in list(existing_keys):
-                                    if key in desired_keys:
-                                        continue
-                                    is_pv_variant = "_pv_power_" in key or "_pv_energy_" in key
-                                    is_home = "_home_consumption_" in key
-                                    is_grid = "_grid_to_battery_" in key
-                                    if (is_pv_variant and allow_remove_pv) or (is_home and allow_remove_home) or (is_grid and allow_remove_grid):
-                                        unique_id = f"{energy_dashboard_platform_name}_{key}"
-                                        entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-                                        if entity_id:
-                                            entity_registry.async_remove(entity_id)
-                                        hub.sensorEntities.pop(key, None)
-                                        hub.sensorDescriptions.pop(key, None)
-                                        hub.computedSensors.pop(key, None)
-
-                            # Recompute ED values immediately to relink unavailable entities.
-                            for newdescr in energy_dashboard_sensors:
-                                if newdescr.register < 0 and newdescr.value_function:
-                                    sens = hub.sensorEntities.get(newdescr.key)
-                                    if sens is None and not getattr(newdescr, "internal", False):
-                                        continue
-                                    try:
-                                        hub.data[newdescr.key] = newdescr.value_function(0, newdescr, hub.data)
-                                    except Exception as e:
-                                        _LOGGER.debug(f"{hub_name}: ED refresh value_function failed for {newdescr.key}: {e}")
-                                        continue
-                                    if sens and not getattr(newdescr, "internal", False):
-                                        sens.modbus_data_updated()
-
-                        domain_data = hass.data.setdefault(DOMAIN, {})
-                        hub_entry = domain_data.setdefault(hub_name, {})
-                        hub_entry["energy_dashboard_refresh_callback"] = async_refresh_energy_dashboard_entities
+            mapping = getattr(plugin_obj, "ENERGY_DASHBOARD_MAPPING", None)
+            if mapping is None:
+                _LOGGER.debug("%s: ENERGY_DASHBOARD_MAPPING not found (plugin may not support Energy Dashboard)", hub_name)
+            elif not validate_mapping(mapping):
+                _LOGGER.error("%s: Invalid Energy Dashboard mapping, skipping device creation", hub_name)
             else:
-                _LOGGER.debug(f"{hub_name}: ENERGY_DASHBOARD_MAPPING not found (plugin may not support Energy Dashboard)")
+                _LOGGER.info("%s: Energy Dashboard mapping found for plugin: %s", hub_name, mapping.plugin_name)
+                coordinator = get_energy_dashboard_coordinator(hass)
+                coordinator.register_hub(entry.entry_id, hub)
+                dashboard_keys = coordinator.dashboard_entity_keys(hub)
+                dashboard_entities: dict[str, Any] = {}
+                energy_dashboard_platform_name = f"{hub_name} Energy Dashboard"
+
+                async def async_refresh_energy_dashboard_entities() -> None:
+                    should_create = await should_create_energy_dashboard_device(hub, config, hass, _LOGGER, initial_groups)
+                    descriptions = (
+                        await create_energy_dashboard_sensors(hub, mapping, hass, config) if should_create and hub.device_info is not None else []
+                    )
+                    desired = {description.key: description for description in descriptions}
+
+                    for key in dashboard_keys - desired.keys():
+                        sensor = dashboard_entities.get(key) or hub.sensorEntities.get(key)
+                        if sensor is not None and hasattr(sensor, "set_energy_dashboard_active"):
+                            sensor.set_energy_dashboard_active(False)
+                        hub.computedSensors.pop(key, None)
+
+                    new_entities: list[SensorEntity] = []
+                    for key, description in desired.items():
+                        sensor = dashboard_entities.get(key) or hub.sensorEntities.get(key)
+                        if sensor is None:
+                            created_entities: list[SensorEntity] = []
+                            entityToListSingle(
+                                hub,
+                                energy_dashboard_platform_name,
+                                created_entities,
+                                initial_groups,
+                                hub.computedSensors,
+                                hub.device_info,
+                                description,
+                                None,
+                                readFollowUp,
+                            )
+                            if not created_entities:
+                                continue
+                            sensor = created_entities[0]
+                            dashboard_entities[key] = sensor
+                            dashboard_keys.add(key)
+                            new_entities.extend(created_entities)
+                        else:
+                            dashboard_entities[key] = sensor
+                            hub.sensorDescriptions[key] = description
+                            sensor.entity_description = description
+                            if hasattr(sensor, "_riemann_mapping"):
+                                sensor._riemann_mapping = getattr(description, "_riemann_mapping", None)
+                                sensor._riemann_data_hub = getattr(description, "_riemann_data_hub", hub)
+                                sensor._filter_function = (sensor._riemann_mapping.filter_function if sensor._riemann_mapping else None) or (
+                                    lambda value: value
+                                )
+                            if hasattr(sensor, "_source_key"):
+                                sensor._source_key = getattr(description, "_daily_delta_source_key", None)
+                            if hasattr(sensor, "set_energy_dashboard_active"):
+                                sensor.set_energy_dashboard_active(True)
+
+                        if description.register < 0 and description.value_function and not getattr(description, "_is_riemann_sum_sensor", False):
+                            hub.computedSensors[key] = description
+
+                    if new_entities:
+                        _LOGGER.info("%s: Registering %s Energy Dashboard entities", hub_name, len(new_entities))
+                        entities.extend(new_entities)
+                        async_add_entities(new_entities)
+
+                    for key, description in desired.items():
+                        sensor = dashboard_entities.get(key) or hub.sensorEntities.get(key)
+                        if (
+                            description.register < 0
+                            and description.value_function
+                            and not getattr(
+                                description,
+                                "_is_riemann_sum_sensor",
+                                False,
+                            )
+                        ):
+                            try:
+                                hub.data[key] = description.value_function(0, description, hub.data)
+                            except Exception as ex:
+                                _LOGGER.debug("%s: ED refresh value_function failed for %s: %s", hub_name, key, ex)
+                                continue
+                        if sensor is not None and getattr(sensor, "hass", None) is not None:
+                            sensor.modbus_data_updated()
+
+                if hub.device_info is None:
+                    _LOGGER.error("%s: Energy Dashboard setup deferred because hub device_info is not initialized", hub_name)
+                await async_refresh_energy_dashboard_entities()
+                entry.async_on_unload(
+                    coordinator.register_refresh_callback(
+                        entry.entry_id,
+                        async_refresh_energy_dashboard_entities,
+                    )
+                )
         except Exception as e:
-            _LOGGER.error(f"{hub_name}: Error during Energy Dashboard setup: {e}", exc_info=True)
+            _LOGGER.error("%s: Error during Energy Dashboard setup: %s", hub_name, e, exc_info=True)
             # Continue without Energy Dashboard support - don't break the integration
 
     return True
@@ -546,6 +410,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 class SolaXModbusSensor(SensorEntity):
     """Representation of an SolaX Modbus sensor."""
+
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -560,7 +426,22 @@ class SolaXModbusSensor(SensorEntity):
         self._hub = hub
         # self.entity_id = "sensor." + platform_name + "_" + description.key
         self.entity_description: BaseModbusSensorEntityDescription = description
+        self._energy_dashboard_active = True
         self._attr_extra_state_attributes = _energy_dashboard_mapping_attrs(self.entity_description, self._hub)
+
+    @callback
+    def set_energy_dashboard_active(self, active: bool) -> None:
+        """Change dashboard availability without deleting its registry entry."""
+        if self._energy_dashboard_active == active:
+            return
+        self._energy_dashboard_active = active
+        if active:
+            self._energy_dashboard_reactivated()
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    def _energy_dashboard_reactivated(self) -> None:
+        """Reset subclass state after a period without dashboard updates."""
 
     def _register_hub_sensor_entity(self) -> None:
         # Only called from async_added_to_hass so disabled entities never enter sensorEntities.
@@ -577,7 +458,7 @@ class SolaXModbusSensor(SensorEntity):
         # Skip hub registration for computed/internal sensors (those without modbus registers)
         # These sensors don't participate in the polling cycle
         if self.entity_description.register < 0:
-            if self.entity_description.value_function:
+            if self.entity_description.value_function and self._energy_dashboard_active:
                 self._hub.computedSensors[self.entity_description.key] = self.entity_description
                 try:
                     self._hub.data[self.entity_description.key] = self.entity_description.value_function(
@@ -587,7 +468,7 @@ class SolaXModbusSensor(SensorEntity):
                     )
                     self.modbus_data_updated()
                 except Exception as e:
-                    _LOGGER.debug(f"{self._platform_name}: value_function failed for {self.entity_description.key}: {e}")
+                    _LOGGER.debug("%s: value_function failed for %s: %s", self._platform_name, self.entity_description.key, e)
             return
         await self._hub.async_add_solax_modbus_sensor(self)
 
@@ -600,21 +481,21 @@ class SolaXModbusSensor(SensorEntity):
 
     @callback
     def modbus_data_updated(self) -> None:
+        if not self._energy_dashboard_active:
+            return
         self._attr_extra_state_attributes = _energy_dashboard_mapping_attrs(self.entity_description, self._hub)
         self.async_write_ha_state()
 
     @callback
     def _update_state(self) -> None:  # never called ?????
-        _LOGGER.info(f"update_state {self.entity_description.key} : {self._hub.data.get(self.entity_description.key, 'None')}")
+        _LOGGER.info("update_state %s : %s", self.entity_description.key, self._hub.data.get(self.entity_description.key, "None"))
         if self.entity_description.key in self._hub.data:
             self._state = self._hub.data[self.entity_description.key]
 
     @property
     def name(self) -> str:
-        """Return the name."""
-        if self.entity_description.key in COMMUNICATION_SENSOR_KEYS:
-            return str(self.entity_description.name or self.entity_description.key)
-        return f"{self._platform_name} {self.entity_description.name}"
+        """Return the entity name (description name only — the device name provides context)."""
+        return str(self.entity_description.name or self.entity_description.key)
 
     @property
     def unique_id(self) -> str | None:
@@ -629,6 +510,11 @@ class SolaXModbusSensor(SensorEntity):
             # except: val = self._hub.data[self.entity_description.key] # not a number
             # return val
         return None
+
+    @property
+    def available(self) -> bool:
+        """Return whether the dashboard currently exposes this entity."""
+        return self._energy_dashboard_active and super().available
 
     @property
     def should_poll(self) -> bool:
@@ -661,7 +547,7 @@ class RiemannSumEnergySensor(SolaXModbusSensor, RestoreEntity):
         # Get Riemann sum mapping from description
         riemann_mapping = getattr(description, "_riemann_mapping", None)
         if riemann_mapping is None:
-            _LOGGER.error(f"{platform_name}: Riemann sum sensor {description.key} missing mapping")
+            _LOGGER.error("%s: Riemann sum sensor %s missing mapping", platform_name, description.key)
 
         self._riemann_mapping = riemann_mapping
         self._filter_function = (riemann_mapping.filter_function if riemann_mapping else None) or (lambda v: v)
@@ -670,6 +556,11 @@ class RiemannSumEnergySensor(SolaXModbusSensor, RestoreEntity):
         self._total_energy: float = 0.0  # kWh
         self._last_reset_date: date = dt_util.now().date()
         self._attr_extra_state_attributes = self._riemann_extra_attrs()
+
+    def _energy_dashboard_reactivated(self) -> None:
+        """Avoid integrating the time while the dashboard entity was inactive."""
+        self._last_power_value = None
+        self._last_update_time = None
 
     def _riemann_extra_attrs(self) -> dict[str, Any]:
         attrs = _energy_dashboard_mapping_attrs(self.entity_description, self._hub)
@@ -686,9 +577,11 @@ class RiemannSumEnergySensor(SolaXModbusSensor, RestoreEntity):
                     self._total_energy = float(last_state.state)
                     if last_state.last_updated:
                         self._last_update_time = last_state.last_updated.timestamp()
-                    _LOGGER.debug(f"{self._platform_name}: Restored Riemann sum state for {self.entity_description.key}: {self._total_energy} kWh")
+                    _LOGGER.debug(
+                        "%s: Restored Riemann sum state for %s: %s kWh", self._platform_name, self.entity_description.key, self._total_energy
+                    )
                 except (ValueError, AttributeError, TypeError) as e:
-                    _LOGGER.debug(f"{self._platform_name}: Could not restore Riemann sum state for {self.entity_description.key}: {e}")
+                    _LOGGER.debug("%s: Could not restore Riemann sum state for %s: %s", self._platform_name, self.entity_description.key, e)
             reset_date = last_state.attributes.get("last_reset_date") if last_state.attributes else None
             if reset_date:
                 try:
@@ -704,7 +597,7 @@ class RiemannSumEnergySensor(SolaXModbusSensor, RestoreEntity):
             self._hub._hass,
             default=False,
         ):
-            _LOGGER.warning(f"{hub_name}: reset_riemann_sums_on_restart enabled for {self.entity_description.key} - resetting daily total")
+            _LOGGER.warning("%s: reset_riemann_sums_on_restart enabled for %s - resetting daily total", hub_name, self.entity_description.key)
             self._total_energy = 0.0
             self._last_reset_date = dt_util.now().date()
             self._last_power_value = None
@@ -722,7 +615,7 @@ class RiemannSumEnergySensor(SolaXModbusSensor, RestoreEntity):
     @callback
     def modbus_data_updated(self) -> None:
         """Calculate energy when data is updated."""
-        if self._riemann_mapping is None:
+        if not self._energy_dashboard_active or self._riemann_mapping is None:
             return
         from .energy_dashboard import RIEMANN_ROUND_DIGITS
 
@@ -856,7 +749,7 @@ class DailyDeltaEnergySensor(SolaXModbusSensor, RestoreEntity):
                     pass
 
         self._register_hub_sensor_entity()
-        if self.entity_description.value_function:
+        if self.entity_description.value_function and self._energy_dashboard_active:
             self._hub.computedSensors[self.entity_description.key] = self.entity_description
 
     async def async_will_remove_from_hass(self) -> None:
@@ -866,7 +759,7 @@ class DailyDeltaEnergySensor(SolaXModbusSensor, RestoreEntity):
     @callback
     def modbus_data_updated(self) -> None:
         """Calculate today's delta from the cumulative total register."""
-        if not self._source_key:
+        if not self._energy_dashboard_active or not self._source_key:
             return
 
         total = self._hub.data.get(self._source_key)
@@ -1009,7 +902,7 @@ def entityToListSingle(
     # register dependency chain
     deplist = newdescr.depends_on
     if deplist is not None:
-        _LOGGER.debug(f"{hub.name}: {newdescr.key} depends on entities {deplist}")
+        _LOGGER.debug("%s: %s depends on entities %s", hub.name, newdescr.key, deplist)
         for dep_on in deplist:  # register inter-sensor dependencies (e.g. for value functions)
             if dep_on != newdescr.key:
                 hub.entity_dependencies.setdefault(dep_on, []).append(newdescr.key)  # can be more than one
@@ -1024,7 +917,7 @@ def entityToListSingle(
         if newdescr.value_function and newdescr.internal:
             computedRegs[newdescr.key] = newdescr
         elif not newdescr.value_function and is_entity_enabled(hub._hass, hub, newdescr, use_default=True, platform_name=hub_name):
-            _LOGGER.warning(f"{hub_name}: entity without modbus register address and without value_function found: {newdescr.key}")
+            _LOGGER.warning("%s: entity without modbus register address and without value_function found: %s", hub_name, newdescr.key)
     else:
         # target group
         interval_group = groups.setdefault(hub.scan_group(sensor), empty_input_interval_group_lambda())
@@ -1047,15 +940,18 @@ def entityToListSingle(
                     first = holdingRegs[newdescr.register]
                     holdingRegs[newdescr.register] = {first.register_data_type: first, newdescr.register_data_type: newdescr}
                 else:
-                    _LOGGER.warning(f"{hub_name}: holding register already used: 0x{newdescr.register:x} {newdescr.key}")
+                    # Allow duplicate BMS registers (0x9000-0x9FFF): dynamically
+                    # switched via BMS_Inquire per battery string (issue #1815)
+                    if not (0x9000 <= newdescr.register <= 0x9FFF):
+                        _LOGGER.warning("%s: holding register already used: 0x%x %s", hub_name, newdescr.register, newdescr.key)
             else:
                 holdingRegs[newdescr.register] = newdescr
         elif newdescr.register_type == REG_INPUT:
             if newdescr.register in inputRegs:  # duplicate or 2 bytes in one register ?
                 first = inputRegs[newdescr.register]
                 inputRegs[newdescr.register] = {first.register_data_type: first, newdescr.register_data_type: newdescr}
-                _LOGGER.warning(f"{hub_name}: input register already declared: 0x{newdescr.register:x} {newdescr.key}")
+                _LOGGER.warning("%s: input register already declared: 0x%x %s", hub_name, newdescr.register, newdescr.key)
             else:
                 inputRegs[newdescr.register] = newdescr
         else:
-            _LOGGER.warning(f"{hub_name}: entity declaration without register_type found: {newdescr.key}")
+            _LOGGER.warning("%s: entity declaration without register_type found: %s", hub_name, newdescr.key)
