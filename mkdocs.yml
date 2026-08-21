@@ -37,6 +37,7 @@ nav:
   - Entity description: sofar-entity-description.md
   - Energy storage modes: sofar-energy-storage-modes.md
   - Feed-In limitation: sofar-feedin-limitation.md
+  - Remote power control (RWV): sofar-remote-power-control.md
 - Viessmann / GoodWe:
   - Installation: viessmann-installation.md
 - SolaX:
