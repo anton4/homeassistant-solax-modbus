@@ -1,0 +1,162 @@
+fault1,bit,ID,FAULT,注释,Note
+,0,600,LowBusUVP,低压侧欠压,Low side undervoltage
+,1,601,SwLowBusOVP,低压侧过压软件,Low side overvoltage software
+,2,602,HighBusUVP,高压侧欠压,High side undervoltage
+,3,603,SwHighBusOVP,高压侧过压软件,High voltage side overvoltage software
+,4,604,FlyCapUnbalanceP,飞跨电容不平衡,Fly-through capacitor unbalance
+,5,605,SwLowBusOCP,低压侧过流软件,Low voltage side overcurrent software
+,6,606,HwArmChipErr,ARM芯片故障,ARM chip fault
+,7,607,HwHVPolarityErr,高压反接故障,High voltage reverse connection fault
+,8,608,HwHighBusOVP,高压侧过压硬件,High voltage side overvoltage hardware
+,9,609,HwLowBusOVP,低压侧过压硬件,Low side overvoltage hardware
+,10,610,HwLowBusOCP,低压侧过流硬件,Low voltage side overcurrent hardware
+,11,611,HwIGBTDrvErr,IGBT驱动故障,IGBT driver failure
+,12,612,HwVersionErr,应急版本号错误,Emergency version number error
+,13,613,IsoFault,绝缘故障,Insulation fault
+,14,614,PEConnectFault,接地故障,Ground fault
+,15,615,RelayFail,继电器故障,Relay fault
+fault2,0,616,ArmCommFault,ARM通信故障,ARM communication fault
+,1,617,PcsCommFault,PCS通信故障,PCS communication fault
+,2,618,Pcu1CommFault,PCU1通信故障,PCU1 communication fault
+,3,619,Pcu2CommFault,PCU2通信故障,PCU2 communication fault
+,4,620,Pcu3CommFault,PCU3通信故障,PCU3 communication fault
+,5,621,Bms1CommFault,BMS1通信故障,BMS1 communication fault
+,6,622,Bms2CommFault,BMS2通信故障,BMS2 communication fault
+,7,623,Bms3CommFault,BMS3通信故障,BMS3 communication fault
+,8,624,DC1CommFault,DC1通信故障,DC1 communication fault
+,9,625,DC2CommFault,DC2通信故障,DC2 communication fault
+,10,626,DC3CommFault,DC3通信故障,DC3 communication fault
+,11,627,DC4CommFault,DC4通信故障,DC4 communication fault
+,12,628,DC5CommFault,DC5通信故障,DC5 communication fault
+,13,629,DC6CommFault,DC6通信故障,DC6 communication fault
+,14,630,ModuleOTP,模块过温,Module over temperature
+,15,631,HwADZerodrift,零飘,Zero drift
+fault3,0,632,HwHvFuseFault,高压熔丝故障,High voltage fuse fault
+,1,633,LvSideWakeUpFail,低压侧唤醒故障,Low voltage side wake-up fault
+,2,634,LvSideVakeUpTout,低压侧唤醒超时,Low voltage side wake-up timeout
+,3,635,,,
+,4,636,,,
+,5,637,,,
+,6,638,,,
+,7,639,,,
+,8,640,,,
+,9,641,,,
+,10,642,,,
+,11,643,,,
+,12,644,,,
+,13,645,,,
+fault4,0,646,,,
+,1,647,,,
+,2,648,,,
+,3,649,,,
+,4,650,,,
+,5,651,,,
+,6,652,,,
+,7,653,,,
+,8,654,,,
+,9,655,,,
+,10,656,,,
+,11,657,,,
+,12,658,,,
+,13,659,,,
+,14,660,,,
+,15,661,,,
+Fault5,0,662,,,
+,1,663,,,
+,2,664,,,
+,3,665,,,
+,4,666,,,
+,5,667,,,
+,6,668,,,
+,7,669,,,
+,8,670,,,
+,9,671,,,
+,10,672,,,
+,11,673,,,
+,12,674,,,
+,13,675,,,
+,14,676,,,
+,15,677,,,
+Fault6,0,678,,,
+,1,679,,,
+,2,680,,,
+,3,681,,,
+,4,682,,,
+,5,683,,,
+,6,684,,,
+,7,685,,,
+,8,686,,,
+,9,687,,,
+,10,688,,,
+,11,689,,,
+,12,690,,,
+,13,691,,,
+,14,692,,,
+,15,693,,,
+,13,694,,,
+,14,695,,,
+,15,696,,,
+Fault7,0,697,,,
+,1,698,,,
+,2,699,,,
+,3,700,,,
+,4,701,,,
+,5,702,,,
+,6,703,,,
+,7,704,,,
+,8,705,,,
+,9,706,,,
+,10,707,,,
+,11,708,,,
+,12,709,,,
+,13,710,,,
+,14,711,,,
+,15,712,,,
+Fault8,0,713,,,
+,1,714,,,
+,2,715,,,
+,3,716,,,
+,4,717,,,
+,5,718,,,
+,6,719,,,
+,7,720,,,
+,8,721,,,
+,9,722,,,
+,10,723,,,
+,11,724,,,
+,12,725,,,
+,13,726,,,
+,14,727,,,
+,15,728,,,
+Fault9,0,729,VerDiffFault,软件版本不一致,Software version inconsistency
+,1,730,SCICommFault,SCI通信故障,SCI communication failure
+,2,731,,,
+,3,732,,,
+,4,733,,,
+,5,734,,,
+,6,735,,,
+,7,736,,,
+,8,737,,,
+,9,738,,,
+,10,739,,,
+,11,740,,,
+,12,741,,,
+,13,742,,,
+,14,743,,,
+,15,744,,,
+Fault10,0,745,DCDC CountWarn,DCDC数量错误,DCDC count error
+,1,746,PCU CountWarn,PCU数量错误,PCU count error
+,2,747,BMS CountWarn,BMS数量错误,Wrong number of BMS
+,3,748,,,
+,4,749,,,
+,5,750,,,
+,6,751,,,
+,7,752,,,
+,8,753,,,
+,9,754,,,
+,10,755,,,
+,11,756,,,
+,12,757,,,
+,13,758,,,
+,14,759,,,
+,15,760,,,

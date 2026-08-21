@@ -1,0 +1,134 @@
+"Warning1
+(0x6024)",bit,ID,故障(Fault),注释,Remarks
+,0,800,,,
+,1,801,IschgSoftStartFail,充电软起动失败,Charge soft start failure
+,2,802,IsdchgSoftStartFail,放电软起失败,Discharge soft start failure
+,3,803,Fan1Fault,风扇1故障,Fan 1 failure
+,4,804,Fan2Fault,风扇2故障,Fan 2 failure
+,5,805,Fan3Fault,风扇3故障,Fan 3 failure
+,6,806,Fan4Fault,风扇4故障,Fan 4 failure
+,7,807,PCU VerFault,PCU版本不一致,PCU version inconsistent
+,8,808,HS1HighTempWarning,散热器1过温告警,Heatsink 1 overtemperature alarm
+,9,809,EnvHighTempWarning,环境温度过温告警,Ambient temperature overtemperature alarm
+,10,810,HS2HighTempWarning,散热器2过温告警,Heatsink 2 overtemperature alarm
+,11,811,,,
+,12,812,,,
+,13,813,StopChgWarning,禁止充电告警,Prohibit charging alarm
+,14,814,StopDchgWarning,禁止放电告警,Prohibit discharge alarm
+,15,815,BatUnbalancedWarning,电池不均衡告警,Battery unbalance alarm
+"Warning2
+(0x6025)",0,816,BusAvgOVWarning,母线过压告警,Bus over-voltage alarm
+,1,817,BusAvgUVWarning,母线欠压告警,Bus undervoltage alarm
+,2,818,BatAvgOVWarning,电池过压告警,Battery over-voltage alarm
+,3,819,BatAvgUVWarning,电池欠压告警,Battery undervoltage alarm
+,4,820,,,
+,5,821,,,
+,6,822,,,
+,7,823,,,
+,8,824,,,
+,9,825,,,
+,11,827,,,
+,12,828,,,
+,13,829,,,
+,14,830,,,
+,15,831,,,
+"Warning3
+(0x6026)",0,832,,,
+,1,833,,,
+,2,834,,,
+,3,835,,,
+,4,836,,,
+,5,837,,,
+,6,838,,,
+,7,839,,,
+,8,840,,,
+,9,841,,,
+,10,842,,,
+,11,843,,,
+,12,844,,,
+,13,845,,,
+"Warning4
+(0x6027)",0,848,,,
+,1,849,,,
+,2,850,,,
+,3,851,,,
+,4,852,,,
+,5,853,,,
+,6,854,,,
+,7,855,,,
+,8,856,,,
+,9,857,,,
+,10,858,,,
+,11,859,,,
+,12,860,,,
+,13,861,,,
+,14,862,,,
+,15,863,,,
+"Fault1
+(0x6028)",0,864,HS1OverTempFault,散热器1过温保护,Heatsink 1 overtemperature protection
+,1,865,OverTempFault_Env,环境温度过温保护,Ambient temperature overtemperature protection
+,2,866,SciCommFault,Sci通信故障,Sci communication fault
+,3,867,Can1CommFault,Can1通信故障,Can1 communication fault
+,4,868,Relay1Fail,继电器1故障,Relay 1 fault
+,5,869,HS2OverTempFault,散热器2过温保护,Radiator 2 overtemperature protection
+,6,870,Can2CommFault,Can2通信故障,Can2 communication fault
+,7,871,Relay2Fail,继电器2故障,Relay 2 fault
+,8,872,SwBusInstantOVP,母线软件过压,Busbar software over-voltage
+,9,873,SwBusInstantUVP,母线软件欠压,Bus software undervoltage
+,10,874,SwBatInstantOVP,电池软件过压,Battery software overvoltage
+,11,875,SwBatInstantUVP,电池软件欠压,Battery software undervoltage
+,12,876,SwBatInstantOCP,电池软件过流,Battery software overcurrent
+,13,877,FlyingCap1OVP,飞跨电容1过压,Fly span capacitor 1 overvoltage
+,14,878,FlyingCap2OVP,飞跨电容2过压,Fly span capacitor 2 overvoltage
+,15,879,HwOCP,硬件过流,Hardware overcurrent
+"Fault2
+(0x6029)",0,880,unrecoverBusAvgOV,永久母线过压,Permanent busbar overvoltage
+,1,881,unrecoverBatAvgUV,永久电池欠压,Permanent battery undervoltage
+,2,882,unrecoverOCPInstant,永久过流,Permanent overcurrent
+,3,883,unrecoverHwOCP,永久硬件过流,Permanent hardware overcurrent
+,4,884,FlyingCap3OVP,飞跨电容3过压,Fly span capacitor 3 overvoltage
+,5,885,FlyingCap4OVP,飞跨电容4过压,Fly-span capacitor 4 overvoltage
+,6,886,FlyingCap1UVP,飞跨电容1欠压,Fly-through capacitor 1 undervoltage
+,7,887,FlyingCap2UVP,飞跨电容2欠压,Fly-span capacitor 2 undervoltage
+,8,888,unrecoverRelay1Fail,继电器1永久故障,Relay 1 permanently faulty
+,9,889,unrecoverRelay2Fail,继电器2永久故障,Relay 2 permanently faulty
+,10,890,FlyingCap3UVP,飞跨电容3欠压,Fly-span capacitor 3 undervoltage
+,11,891,FlyingCap4UVP,飞跨电容4欠压,Fly-span capacitor 4 undervoltage
+,12,892,,,
+,13,893,unrecoverBusSCP,永久短路保护,Permanent short circuit protection
+,14,894,unrecoverBatActFail,永久电池激活失败,Permanent battery activation failure
+,15,895,unrecoverBusRPP,永久性BUS反接,Permanent BUS reverse connection
+"Fault3
+(0x602A)",0,896,BatteryStateErr,电池状态错误,Battery status error
+,1,897,PWMModeErr,PWM模式错误,PWM mode error
+,2,898,BMSVerionErr,BMS版本错误,BMS version error
+,3,899,BMSOVOCP,BMS过压过流故障,BMS overvoltage and overcurrent failure
+,4,900,SwBatAvgOCP,电池平均值过流保护,Battery average overcurrent protection
+,5,901,SwAvgOverloadP,平均值过载保护,Average value overload protection
+,6,902,SwBusInstantOCP,母线软件过流,Busbar software overcurrent
+,7,903,SwCBCOCP,软件CBC过流保护,Software CBC overcurrent protection
+,8,904,PackIDErr,PackID 错误,PackID error
+,9,905,BusSCP,启机短路保护,Start-up short circuit protection
+,10,906,SwBusAvgUVP,母线平均值欠压,Bus average undervoltage
+,11,907,Clockfail,时钟故障,Clock fault
+,12,908,PCSCanCommFault,PCS通信故障,PCS communication fault
+,13,909,,,
+,14,910,,,
+,15,911,,,
+"Fault4
+(0x602B)",0,912,,,
+,1,913,,,
+,2,914,,,
+,3,915,,,
+,4,916,,,
+,5,917,,,
+,6,918,,,
+,7,919,,,
+,8,920,,,
+,9,921,,,
+,10,922,,,
+,11,923,,,
+,12,924,,,
+,13,925,,,
+,14,926,,,
+,15,927,,,
