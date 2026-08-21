@@ -63,7 +63,7 @@ GEN = 0x0001  # base generation for MIC, PV, AC
 GEN2 = 0x0002
 ALL_GEN_GROUP = GEN2
 
-X1 = 0x0100  # not needed
+X1 = 0x0100
 X3 = 0x0200
 ALL_X_GROUP = X1 | X3
 
@@ -85,9 +85,9 @@ ALL_PM_GROUP = PM
 
 # 1 is minimum
 MPPT2 = 0x40000
-MPPT4 = MPPT2 * 2
-MPPT_MIN2 = MPPT2 | MPPT4
-ALL_MPPT = MPPT2 | MPPT4
+MPPT4 = 0x80000
+MPPT6 = 0x100000
+ALL_MPPT = MPPT2 | MPPT4 | MPPT6
 
 # ALLDEFAULT = 0 # should be equivalent to HYBRID | AC | GEN2 | GEN3 | GEN4 | X1 | X3
 ALLDEFAULT = 0  # HYBRID | AC | ALL_X_GROUP
@@ -114,10 +114,10 @@ async def _read_serialnr(hub: Any, address: int = 10000, count: int = 8, swapbyt
                 res = str(ba, "ascii")  # convert back to string
             hub._seriesnumber = res
     except Exception:
-        _LOGGER.warning(f"{hub.name}: attempt to read serialnumber failed at 0x{address:x}", exc_info=True)
+        _LOGGER.warning("%s: attempt to read serialnumber failed at 0x%x", hub.name, address, exc_info=True)
     if not res:
-        _LOGGER.warning(f"{hub.name}: reading serial number from address 0x{address:x} failed; other address may succeed")
-    _LOGGER.info(f"Read {hub.name} 0x{address:x} serial number: {res}, swapped: {swapbytes}")
+        _LOGGER.warning("%s: reading serial number from address 0x%x failed; other address may succeed", hub.name, address)
+    _LOGGER.info("Read %s 0x%x serial number: %s, swapped: %s", hub.name, address, res, swapbytes)
     return res
 
 
@@ -129,8 +129,8 @@ async def _read_model(hub: Any, address: int = 10008) -> int | None:
             res = convert_from_registers(inverter_data.registers[0:1], DataType.UINT16, "big")  # type: ignore[attr-defined]  # DataType enum dynamic
             hub._invertertype = res
     except Exception:
-        _LOGGER.warning(f"{hub.name}: attempt to read model failed at 0x{address:x}", exc_info=True)
-    _LOGGER.info(f"Read {hub.name} 0x{address:x} model: {res}")
+        _LOGGER.warning("%s: attempt to read model failed at 0x%x", hub.name, address, exc_info=True)
+    _LOGGER.info("Read %s 0x%x model: %s", hub.name, address, res)
     return res
 
 
@@ -142,7 +142,7 @@ def _bytes_str(b_array: list[int]) -> str:
 
 
 def _model_str(val: int) -> str:
-    # there are models 40,41,42, docu not found
+    # Mapping based on Solinteg documentation in issue #2158
     d = {
         30: [
             "MHT-4K-25",
@@ -174,6 +174,29 @@ def _model_str(val: int) -> str:
             "MHT-36K-100",
             "MHT-40K-100",
             "MHT-50K-100",
+        ],
+        40: [
+            "M2HT-3K-30",
+            "M2HT-3.6K-30",
+            "M2HT-4.2K-30",
+            "M2HT-4.6K-30",
+            "M2HT-5K-30",
+            "M2HT-6K-30",
+        ],
+        41: [
+            "M2HT-25K-150",
+            "M2HT-29.9K-150",
+            "M2HT-30K-150",
+            "M2HT-40K-150",
+            "M2HT-50K-150",
+        ],
+        43: [
+            "M2HT-75K-300",
+            "M2HT-80K-300",
+            "M2HT-99K-300",
+            "M2HT-100K-300",
+            "M2HT-110K-300",
+            "M2HT-125K-300",
         ],
     }
     try:
@@ -556,6 +579,21 @@ NUMBER_TYPES = [
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID,
         icon="mdi:import",
+    ),
+    SolintegModbusNumberEntityDescription(
+        name="Charge Cutoff SOC",
+        key="charge_cutoff_soc",
+        register=52506,
+        fmt="i",
+        native_min_value=10,
+        native_max_value=98,
+        native_step=1,
+        native_unit_of_measurement=PERCENTAGE,
+        read_scale=0.1,
+        scale=1,
+        allowedtypes=HYBRID,
+        entity_category=EntityCategory.CONFIG,
+        icon="mdi:battery-arrow-up",
     ),
 ]
 
@@ -968,7 +1006,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="pv_voltage_2",
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
-        allowedtypes=MPPT_MIN2,
+        allowedtypes=MPPT2 | MPPT4 | MPPT6,
         register=11040,
         scale=0.1,
         scan_group=SCAN_GROUP_MPPT,
@@ -979,7 +1017,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="pv_current_2",
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         device_class=SensorDeviceClass.CURRENT,
-        allowedtypes=MPPT_MIN2,
+        allowedtypes=MPPT2 | MPPT4 | MPPT6,
         register=11041,
         scale=0.1,
         scan_group=SCAN_GROUP_MPPT,
@@ -991,7 +1029,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        allowedtypes=MPPT_MIN2,
+        allowedtypes=MPPT2 | MPPT4 | MPPT6,
         register=11064,
         register_data_type=REGISTER_U32,
         scan_group=SCAN_GROUP_MPPT,
@@ -1002,7 +1040,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="pv_voltage_3",
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
-        allowedtypes=MPPT4,
+        allowedtypes=MPPT4 | MPPT6,
         register=11042,
         scale=0.1,
         scan_group=SCAN_GROUP_MPPT,
@@ -1013,7 +1051,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="pv_current_3",
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         device_class=SensorDeviceClass.CURRENT,
-        allowedtypes=MPPT4,
+        allowedtypes=MPPT4 | MPPT6,
         register=11043,
         scale=0.1,
         scan_group=SCAN_GROUP_MPPT,
@@ -1025,7 +1063,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        allowedtypes=MPPT4,
+        allowedtypes=MPPT4 | MPPT6,
         register=11066,
         register_data_type=REGISTER_U32,
         scan_group=SCAN_GROUP_MPPT,
@@ -1036,7 +1074,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="pv_voltage_4",
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
-        allowedtypes=MPPT4,
+        allowedtypes=MPPT4 | MPPT6,
         register=11044,
         scale=0.1,
         scan_group=SCAN_GROUP_MPPT,
@@ -1047,7 +1085,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="pv_current_4",
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         device_class=SensorDeviceClass.CURRENT,
-        allowedtypes=MPPT4,
+        allowedtypes=MPPT4 | MPPT6,
         register=11045,
         scale=0.1,
         scan_group=SCAN_GROUP_MPPT,
@@ -1059,8 +1097,76 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        allowedtypes=MPPT4,
+        allowedtypes=MPPT4 | MPPT6,
         register=11068,
+        register_data_type=REGISTER_U32,
+        scan_group=SCAN_GROUP_MPPT,
+        icon="mdi:solar-power-variant",
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="PV Voltage 5",
+        key="pv_voltage_5",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        allowedtypes=MPPT6,
+        register=11046,
+        scale=0.1,
+        scan_group=SCAN_GROUP_MPPT,
+        icon="mdi:current-dc",
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="PV Current 5",
+        key="pv_current_5",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        device_class=SensorDeviceClass.CURRENT,
+        allowedtypes=MPPT6,
+        register=11047,
+        scale=0.1,
+        scan_group=SCAN_GROUP_MPPT,
+        icon="mdi:current-dc",
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="PV Power 5",
+        key="pv_power_5",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        allowedtypes=MPPT6,
+        register=11070,
+        register_data_type=REGISTER_U32,
+        scan_group=SCAN_GROUP_MPPT,
+        icon="mdi:solar-power-variant",
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="PV Voltage 6",
+        key="pv_voltage_6",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        allowedtypes=MPPT6,
+        register=11048,
+        scale=0.1,
+        scan_group=SCAN_GROUP_MPPT,
+        icon="mdi:current-dc",
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="PV Current 6",
+        key="pv_current_6",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        device_class=SensorDeviceClass.CURRENT,
+        allowedtypes=MPPT6,
+        register=11049,
+        scale=0.1,
+        scan_group=SCAN_GROUP_MPPT,
+        icon="mdi:current-dc",
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="PV Power 6",
+        key="pv_power_6",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        allowedtypes=MPPT6,
+        register=11072,
         register_data_type=REGISTER_U32,
         scan_group=SCAN_GROUP_MPPT,
         icon="mdi:solar-power-variant",
@@ -1533,6 +1639,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
+        allowedtypes=HYBRID | ALL_EPS_GROUP,
         icon="mdi:home",
     ),
     # internal sensors are only used for polling values for selects, etc
@@ -1762,6 +1869,13 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         allowedtypes=X3,
         icon="mdi:current-ac",
     ),
+    SolintegModbusSensorEntityDescription(
+        key="charge_cutoff_soc",
+        register=52506,
+        scale=0.1,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
 ]
 
 
@@ -1777,32 +1891,37 @@ class solinteg_plugin(plugin_base):
     """
 
     async def async_determineInverterType(self, hub: Any, configdict: dict[str, Any]) -> int:
-        _LOGGER.info(f"{hub.name}: trying to determine inverter type")
+        _LOGGER.info("%s: trying to determine inverter type", hub.name)
         seriesnumber = await _read_serialnr(hub)
         if not seriesnumber:
-            _LOGGER.error(f"{hub.name}: cannot find serial number, even not for other Inverter")
+            _LOGGER.error("%s: cannot find serial number, even not for other Inverter", hub.name)
 
         model = await _read_model(hub)
         if model is None or model == 0:
-            _LOGGER.error(f"{hub.name}: could not read inverter model")
+            _LOGGER.error("%s: could not read inverter model", hub.name)
             return 0
         else:
             self.inverter_model = _model_str(model)  # as string
 
         bh, bl = model // 256, model % 256
         invertertype = 0
-        if bh in [30, 31, 32]:
+        if bh in [30, 31, 32, 40, 41, 43]:
             invertertype = invertertype | HYBRID
 
-        if bh in [30, 32, 40, 42]:
+        if bh in [30, 32, 41, 43]:
             invertertype = invertertype | X3
+        else:
+            invertertype = invertertype | X1
 
-        if bh == 30 and bl in [0, 1]:
+        if (bh == 31 and bl in [8, 9]) or (bh == 40 and bl == 0):
             mppt = 1
-        elif bh == 32:
+        elif bh == 43:
+            mppt = 6
+            invertertype = invertertype | MPPT6
+        elif bh in [32, 41]:
             mppt = 4
             invertertype = invertertype | MPPT4
-        else:  # bh == 31, other 30...
+        else:
             mppt = 2
             invertertype = invertertype | MPPT2
 
@@ -1823,7 +1942,7 @@ class solinteg_plugin(plugin_base):
                     self.SENSOR_TYPES[i] = replace(ssensor, scale=lambda v, descr, dd: _fn_mppt_mask_ex(v, _mppt_mask))  # type: ignore
                     break
         except Exception:
-            _LOGGER.error(f"{hub.name}: unexpected error", exc_info=True)
+            _LOGGER.error("%s: unexpected error", hub.name, exc_info=True)
 
         read_eps = configdict.get(CONF_READ_EPS, DEFAULT_READ_EPS)
         read_dcb = configdict.get(CONF_READ_DCB, DEFAULT_READ_DCB)
@@ -1831,7 +1950,7 @@ class solinteg_plugin(plugin_base):
             invertertype = invertertype | EPS
         if read_dcb:
             invertertype = invertertype | DCB
-        _LOGGER.info(f"{hub.name}: inverter type: x{invertertype:x}, mppt count={mppt}")
+        _LOGGER.info("%s: inverter type: x%x, mppt count=%s", hub.name, invertertype, mppt)
 
         return invertertype
 
@@ -1862,20 +1981,109 @@ from .energy_dashboard import EnergyDashboardMapping, EnergyDashboardSensorMappi
 ENERGY_DASHBOARD_MAPPING = EnergyDashboardMapping(
     plugin_name="solinteg",
     mappings=[
+        # ===== SOC SENSOR =====
+        # Battery SoC %
+        EnergyDashboardSensorMapping(
+            source_key="battery_soc",
+            target_key="battery_soc",
+            name="Battery SoC",
+        ),
+        # ===== POWER SENSORS =====
+        # Grid Power
         EnergyDashboardSensorMapping(
             source_key="measured_power",
-            source_key_pm=None,  # measured_power is system-wide
             target_key="grid_power",
             name="Grid Power",
             invert=True,
             icon="mdi:transmission-tower",
         ),
+        # Solar Power
         EnergyDashboardSensorMapping(
-            source_key="battery_power",  # Note: plugin_solinteg uses battery_power (not battery_power_charge)
-            source_key_pm=None,  # No parallel mode support in this plugin
+            source_key="pv_power_total",
+            target_key="solar_power",
+            name="Solar Power",
+        ),
+        # PV Variant Power
+        EnergyDashboardSensorMapping(
+            source_key="pv_power_{n}",
+            target_key="pv_power_{n}",
+            name="PV Power {n}",
+        ),
+        # Battery Power
+        EnergyDashboardSensorMapping(
+            source_key="battery_power",
             target_key="battery_power",
             name="Battery Power",
-            invert=True,
+        ),
+        # Home Consumption Power
+        EnergyDashboardSensorMapping(
+            source_key="house_total_load",
+            target_key="home_consumption_power",
+            name="Home Consumption Power",
+        ),
+        # Grid to Battery Power (TODO)
+        # EnergyDashboardSensorMapping(
+        #     source_key="inverter_power",
+        #     target_key="grid_to_battery_power",
+        #     name="Grid to Battery Power",
+        #     filter_function=lambda v: max(0 - v, 0),
+        #     icon="mdi:transmission-tower-export",
+        # ),
+        # ===== ENERGY SENSORS =====
+        # PV Variant Energy (per string).
+        EnergyDashboardSensorMapping(
+            source_key="pv_power_{n}",
+            target_key="pv_energy_{n}",
+            name="PV Energy {n}",
+            use_riemann_sum=True,
+            filter_function=lambda v: max(0, v),
+        ),
+        # Grid Import Energy
+        EnergyDashboardSensorMapping(
+            source_key="grid_import_today",
+            target_key="grid_energy_import",
+            name="Grid Import Energy",
+        ),
+        # Grid Export Energy
+        EnergyDashboardSensorMapping(
+            source_key="grid_export_today",
+            target_key="grid_energy_export",
+            name="Grid Export Energy",
+        ),
+        # Home Consumption Energy
+        # The 'house_energy_today' sensor does not provide valid information
+        # on some inverters, so use riemann sum of house load power.
+        EnergyDashboardSensorMapping(
+            source_key="house_load_total",
+            target_key="home_consumption_energy",
+            name="Home Consumption Energy",
+            use_riemann_sum=True,
+            filter_function=lambda v: max(0, v),
+        ),
+        # Battery Charge Energy
+        EnergyDashboardSensorMapping(
+            source_key="battery_charge_today",
+            target_key="battery_energy_charge",
+            name="Battery Charge Energy",
+        ),
+        # Battery Discharge Energy
+        EnergyDashboardSensorMapping(
+            source_key="battery_discharge_today",
+            target_key="battery_energy_discharge",
+            name="Battery Discharge Energy",
+        ),
+        # Grid to Battery Energy (TODO)
+        # EnergyDashboardSensorMapping(
+        #     source_key="e_charge_today",
+        #     target_key="grid_to_battery_energy",
+        #     name="Grid to Battery Energy",
+        #     icon="mdi:transmission-tower-export",
+        # ),
+        # Solar Production Energy
+        EnergyDashboardSensorMapping(
+            source_key="energy_generation_today",
+            target_key="solar_energy_production",
+            name="Solar Production Energy",
         ),
     ],
     parallel_mode_supported=False,  # Plugin doesn't support parallel mode
