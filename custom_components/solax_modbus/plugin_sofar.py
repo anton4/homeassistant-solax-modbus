@@ -31,6 +31,7 @@ from custom_components.solax_modbus.const import (  # type: ignore[attr-defined]
     DEFAULT_READ_EPS,
     DEFAULT_READ_PM,
     REG_HOLDING,
+    REGISTER_INT_RANGES,
     REGISTER_S16,
     REGISTER_S32,
     REGISTER_STR,
@@ -344,6 +345,17 @@ def _remote_power_limit(datadict: dict[str, Any], watt_key: str, percent_key: st
     return max(0, min(REMOTE_POWER_LIMIT_MAX, round(percent * 10))), source
 
 
+def _remote_power_clamped(value: float, register_type: str) -> int:
+    """Clamp a re-sent read-back to its register's range.
+
+    The hub validates a whole multi-register payload before it reaches the transport and raises
+    RegisterEncodingError on an out-of-range value. The autorepeat loop does not catch it, so one bad
+    read-back would fail every poll rather than one write.
+    """
+    minimum, maximum = REGISTER_INT_RANGES[register_type]
+    return max(minimum, min(maximum, round(value)))
+
+
 def _remote_power_record_expected(datadict: dict[str, Any], bits: int, export_limit: int, import_limit: int) -> None:
     """Record what this write puts in 0x1105-0x1107 so the read-back can be judged against it.
 
@@ -422,11 +434,11 @@ def autorepeat_function_sofar_power_control(initval: Any, descr: Any, datadict: 
                 "and switch back to Short.",
             )
             data += [
-                (REGISTER_S16, round(float(datadict["reactive_power_setting"]) * 10)),  # 0x1108
-                (REGISTER_S16, round(float(datadict["power_factor_setting"]) * 100)),  # 0x1109
-                (REGISTER_U16, max(1, min(65535, int(datadict["remote_power_limit_speed"])))),  # 0x110A
-                (REGISTER_U16, round(float(datadict["reactive_power_response_time"]) * 10)),  # 0x110B
-                (REGISTER_S16, round(float(datadict["svg_fixed_reactive_power"]) * 10)),  # 0x110C
+                (REGISTER_S16, _remote_power_clamped(float(datadict["reactive_power_setting"]) * 10, REGISTER_S16)),  # 0x1108
+                (REGISTER_S16, _remote_power_clamped(float(datadict["power_factor_setting"]) * 100, REGISTER_S16)),  # 0x1109
+                (REGISTER_U16, max(1, _remote_power_clamped(int(datadict["remote_power_limit_speed"]), REGISTER_U16))),  # 0x110A
+                (REGISTER_U16, _remote_power_clamped(float(datadict["reactive_power_response_time"]) * 10, REGISTER_U16)),  # 0x110B
+                (REGISTER_S16, _remote_power_clamped(float(datadict["svg_fixed_reactive_power"]) * 10, REGISTER_S16)),  # 0x110C
             ]
     else:
         _remote_power_warn(datadict, "write_mode", None)
@@ -13072,7 +13084,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         value_function=value_function_remote_power_ramp_rate,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
-        depends_on=["active_power_limit_speed", "ratedpower_inverter", "remote_power_rated_power_override"],
+        # Only 0x110A, deliberately. depends_on now gates recomputation on every dependency being *fresh in the
+        # same poll* (__init__.py _compute_poll_sensors), and ratedpower_inverter (0x06ED) is in the fast scan
+        # group while this block is in the default one - listing it would leave this sensor stale forever.
+        # The rated power is a static nameplate value, so its freshness is irrelevant here.
+        depends_on=["active_power_limit_speed"],
         icon="mdi:speedometer",
     ),
     # ---- G3 control read-back companion sensors (internal) ----

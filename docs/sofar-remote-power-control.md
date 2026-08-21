@@ -339,22 +339,22 @@ than commanding reactive power 0 and power factor 0.
         entity_id: button.sofar_passive_mode_battery_charge_discharge
     - action: select.select_option
       target:
-        entity_id: select.solax_remote_power_control_mode
+        entity_id: select.<hub>_remote_power_control_mode
       data:
         option: Active Power Control
     - action: number.set_value
       target:
-        entity_id: number.solax_remote_export_limit_percent
+        entity_id: number.<hub>_remote_export_limit_percent
       data:
         value: 0
     - action: number.set_value
       target:
-        entity_id: number.solax_remote_autorepeat_duration
+        entity_id: number.<hub>_remote_autorepeat_duration
       data:
         value: 3600
     - action: button.press
       target:
-        entity_id: button.solax_remote_update_power_limits
+        entity_id: button.<hub>_remote_update_power_limits
 ```
 
 Adjust the entity ids to your hub name. To release early, set `Remote: Power Control Mode` to `Disabled`
