@@ -589,9 +589,11 @@ def _remote_power_track_verification(datadict: dict[str, Any], write_mode_full: 
         if write_mode_full and count >= _REMOTE_POWER_FALLBACK_AFTER and not datadict.get(_REMOTE_POWER_SHORT_FALLBACK):
             datadict[_REMOTE_POWER_SHORT_FALLBACK] = True
             _LOGGER.error(
-                f"Sofar remote power: the inverter has not stored {count} consecutive Full (0x1105-0x110C) writes "
-                f"({verdict}) - falling back to Short (0x1105-0x1107). Select Short in 'Remote: Power Control "
-                f"Write Mode' to make this permanent."
+                "Sofar remote power: the inverter has not stored %s consecutive Full (0x1105-0x110C) writes (%s) - "
+                "falling back to Short (0x1105-0x1107). Select Short in 'Remote: Power Control Write Mode' to make "
+                "this permanent.",
+                count,
+                verdict,
             )
 
 
@@ -1389,7 +1391,6 @@ NUMBER_TYPES = [
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID | PV | AC,
     ),
-
     # ---- G3 safety / grid-protection parameters (WRITABLE, disabled by default) ----
     SofarModbusNumberEntityDescription(
         name="Connectwaittime",
