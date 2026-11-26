@@ -12066,7 +12066,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=HYBRID | PV | AC,
     ),
     SofarModbusSensorEntityDescription(
-        name="Dcdc Can Buad Rate",
+        name="Dcdc Can Baud Rate",
         key="dcdc_can_buad_rate",
         register=0x508E,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -12971,6 +12971,8 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfTime.SECONDS,
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_remote_power_autorepeat_remaining,
+        depends_on=["_repeatUntil"],
+        recompute_each_poll=True,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:home-clock",
     ),
@@ -12983,6 +12985,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_remote_power_echo,
+        # Maintained by autorepeat_function_sofar_power_control, not by a Modbus read:
+        # no readiness inputs, None (unknown) until the button has been pressed once.
+        depends_on=[],
+        allow_none=True,
+        recompute_each_poll=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-export",
@@ -12994,6 +13001,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         value_function=value_function_remote_power_echo,
+        # Maintained by autorepeat_function_sofar_power_control, not by a Modbus read:
+        # no readiness inputs, None (unknown) until the button has been pressed once.
+        depends_on=[],
+        allow_none=True,
+        recompute_each_poll=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-export",
@@ -13008,6 +13020,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_remote_power_echo,
+        # Maintained by autorepeat_function_sofar_power_control, not by a Modbus read:
+        # no readiness inputs, None (unknown) until the button has been pressed once.
+        depends_on=[],
+        allow_none=True,
+        recompute_each_poll=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-import",
@@ -13019,6 +13036,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         value_function=value_function_remote_power_echo,
+        # Maintained by autorepeat_function_sofar_power_control, not by a Modbus read:
+        # no readiness inputs, None (unknown) until the button has been pressed once.
+        depends_on=[],
+        allow_none=True,
+        recompute_each_poll=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:transmission-tower-import",
@@ -13028,6 +13050,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Remote: Limit Source",
         key="remote_power_limit_source",
         value_function=value_function_remote_power_echo,
+        # Maintained by autorepeat_function_sofar_power_control, not by a Modbus read:
+        # no readiness inputs, None (unknown) until the button has been pressed once.
+        depends_on=[],
+        allow_none=True,
+        recompute_each_poll=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:call-split",
@@ -13037,6 +13064,11 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Remote: Control Conflict",
         key="remote_power_conflict",
         value_function=value_function_remote_power_echo,
+        # Maintained by autorepeat_function_sofar_power_control, not by a Modbus read:
+        # no readiness inputs, None (unknown) until the button has been pressed once.
+        depends_on=[],
+        allow_none=True,
+        recompute_each_poll=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=HYBRID | PV | AC,
         icon="mdi:alert-outline",
