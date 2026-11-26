@@ -142,8 +142,8 @@ def _bytes_str(b_array: list[int]) -> str:
 
 
 def _model_str(val: int) -> str:
-    # Mapping based on Solinteg documentation in issue #2158
-    d = {
+    # Mapping based on Solinteg documentation in issue #2158 and the confirmed model in #2416.
+    d: dict[int, list[str] | dict[int, str]] = {
         30: [
             "MHT-4K-25",
             "MHT-5K-25",
@@ -190,6 +190,7 @@ def _model_str(val: int) -> str:
             "M2HT-40K-150",
             "M2HT-50K-150",
         ],
+        42: {3: "M2HT-10K-30"},
         43: [
             "M2HT-75K-300",
             "M2HT-80K-300",
@@ -580,6 +581,92 @@ NUMBER_TYPES = [
         allowedtypes=HYBRID,
         icon="mdi:import",
     ),
+    # Additional settings available on recent Solinteg firmware versions. These
+    # registers are not included in the current public Modbus register table.
+    SolintegModbusNumberEntityDescription(
+        name="Peak Shaving Max Grid Import Power",
+        key="peak_shaving_max_grid_import_power",
+        register=50016,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=200,
+        native_step=0.1,
+        register_data_type=REGISTER_U16,
+        mode=NumberMode.BOX,
+        scale=0.1,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=NumberDeviceClass.POWER,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:transmission-tower-import",
+    ),
+    SolintegModbusNumberEntityDescription(
+        name="Peak Shaving Minimum SOC",
+        key="peak_shaving_minimum_soc",
+        register=50017,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        register_data_type=REGISTER_U16,
+        mode=NumberMode.BOX,
+        scale=0.1,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:battery-charging-low",
+    ),
+    SolintegModbusNumberEntityDescription(
+        name="Peak Shaving Battery Max Grid Charge",
+        key="peak_shaving_battery_max_grid_charge",
+        register=50018,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=200,
+        native_step=0.1,
+        register_data_type=REGISTER_U16,
+        mode=NumberMode.BOX,
+        scale=0.1,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=NumberDeviceClass.POWER,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:battery-arrow-up",
+    ),
+    SolintegModbusNumberEntityDescription(
+        name="Maximum Battery Charge Power",
+        key="maximum_battery_charge_power",
+        register=50020,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=200,
+        native_step=0.1,
+        register_data_type=REGISTER_U16,
+        mode=NumberMode.BOX,
+        scale=0.1,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=NumberDeviceClass.POWER,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:battery-arrow-up",
+    ),
+    SolintegModbusNumberEntityDescription(
+        name="Maximum Battery Discharge Power",
+        key="maximum_battery_discharge_power",
+        register=50021,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=200,
+        native_step=0.1,
+        register_data_type=REGISTER_U16,
+        mode=NumberMode.BOX,
+        scale=0.1,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=NumberDeviceClass.POWER,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:battery-arrow-down",
+    ),
     SolintegModbusNumberEntityDescription(
         name="Charge Cutoff SOC",
         key="charge_cutoff_soc",
@@ -600,6 +687,15 @@ NUMBER_TYPES = [
 # ================================= Select Declarations ============================================================
 
 SELECT_TYPES = [
+    SolintegModbusSelectEntityDescription(
+        name="Battery SOC Reset",
+        key="battery_soc_reset",
+        register=21001,
+        option_dict=_simple_switch,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:battery-sync",
+    ),
     SolintegModbusSelectEntityDescription(
         name="Working Mode",
         key="working_mode",
@@ -680,6 +776,15 @@ SELECT_TYPES = [
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID,
         icon="mdi:scale-unbalanced",
+    ),
+    SolintegModbusSelectEntityDescription(
+        name="Peak Shaving Switch",
+        key="peak_shaving_switch",
+        register=50022,
+        option_dict=_simple_switch,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:dip-switch",
     ),
     SolintegModbusSelectEntityDescription(
         name="Battery SOC Protection On Grid",
@@ -1353,6 +1458,27 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SolintegModbusSensorEntityDescription(
+        name="Bat. Max Cell Temperature",
+        key="battery_max_cell_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        register=33009,
+        scale=0.1,
+        allowedtypes=HYBRID,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Bat. Max Cell Temperature ID",
+        key="battery_max_cell_temperature_id",
+        native_unit_of_measurement="",
+        register=33008,
+        allowedtypes=HYBRID,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SolintegModbusSensorEntityDescription(
         name="Bat. Min Cell Voltage",
         key="battery_min_cell_voltage",
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
@@ -1645,6 +1771,13 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
     # internal sensors are only used for polling values for selects, etc
     # no need for name, etc
     SolintegModbusSensorEntityDescription(
+        key="battery_soc_reset",
+        register=21001,
+        scale=_simple_switch,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
+    SolintegModbusSensorEntityDescription(
         key="working_mode",
         register=50000,
         scale={
@@ -1703,6 +1836,53 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         register_data_type=REGISTER_U16,
         scale=0.1,
         internal=True,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="peak_shaving_max_grid_import_power",
+        register=50016,
+        register_data_type=REGISTER_U16,
+        scale=0.1,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="peak_shaving_minimum_soc",
+        register=50017,
+        register_data_type=REGISTER_U16,
+        scale=0.1,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="peak_shaving_battery_max_grid_charge",
+        register=50018,
+        register_data_type=REGISTER_U16,
+        scale=0.1,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="maximum_battery_charge_power",
+        register=50020,
+        register_data_type=REGISTER_U16,
+        scale=0.1,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="maximum_battery_discharge_power",
+        register=50021,
+        register_data_type=REGISTER_U16,
+        scale=0.1,
+        internal=True,
+        allowedtypes=HYBRID,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="peak_shaving_switch",
+        register=50022,
+        scale=_simple_switch,
+        internal=True,
+        allowedtypes=HYBRID,
     ),
     SolintegModbusSensorEntityDescription(
         key="ups_function",
@@ -1905,10 +2085,10 @@ class solinteg_plugin(plugin_base):
 
         bh, bl = model // 256, model % 256
         invertertype = 0
-        if bh in [30, 31, 32, 40, 41, 43]:
+        if bh in [30, 31, 32, 40, 41, 42, 43]:
             invertertype = invertertype | HYBRID
 
-        if bh in [30, 32, 41, 43]:
+        if bh in [30, 32, 41, 42, 43]:
             invertertype = invertertype | X3
         else:
             invertertype = invertertype | X1

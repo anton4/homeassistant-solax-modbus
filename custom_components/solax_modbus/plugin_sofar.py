@@ -21,7 +21,7 @@ from homeassistant.const import (
 )
 from homeassistant.helpers.entity import EntityCategory  # type: ignore[attr-defined]  # HA stubs incomplete
 
-from custom_components.solax_modbus.const import (  # type: ignore[attr-defined]  # UnitOfReactivePower conditional import
+from custom_components.solax_modbus.const import (
     BUTTONREPEAT_LOOP,
     BUTTONREPEAT_POST,
     CONF_READ_DCB,
@@ -54,7 +54,6 @@ from custom_components.solax_modbus.const import (  # type: ignore[attr-defined]
     base_battery_config,
     plugin_base,
     value_function_2byte_timestamp,
-    value_function_disabled_enabled,
     value_function_rtc_ymd,
 )
 
@@ -112,6 +111,11 @@ MPPT10 = 0x400000
 ALL_MPPT_GROUP = MPPT3 | MPPT4 | MPPT6 | MPPT8 | MPPT10
 
 BAT_BTS = 0x1000000
+
+HYD_EP = 0x2000000
+ALL_MODEL_GROUP = HYD_EP
+
+HYD_EP_CURRENT_SCALE_EXCEPTIONS = [("SM2ES4", 0.1)]
 
 ALLDEFAULT = 0  # should be equivalent to HYBRID | AC | GEN2 | GEN3 | GEN4 | X1 | X3
 
@@ -880,6 +884,7 @@ BUTTON_TYPES = [
         key="IV_curve_scan",
         register=0x1027,
         command=1,
+        write_method=WRITE_MULTISINGLE_MODBUS,
         icon="mdi:chart-bell-curve",
         allowedtypes=HYBRID,
     ),
@@ -948,8 +953,6 @@ NUMBER_TYPES = [
         device_class=NumberDeviceClass.POWER,
         register_data_type=REGISTER_S32,
         fmt="i",
-        native_max_value=20000,
-        native_min_value=-20000,
         native_step=10,
         initvalue=0,
         allowedtypes=HYBRID,
@@ -7023,7 +7026,10 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Battery Active Control",
         key="battery_active_control",
         register=0x102B,
-        scale=value_function_disabled_enabled,
+        scale={
+            0: "Disabled",
+            1: "Enabled",
+        },
         entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
     ),
@@ -7031,7 +7037,10 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Parallel Control",
         key="parallel_control",
         register=0x1035,
-        scale=value_function_disabled_enabled,
+        scale={
+            0: "Disabled",
+            1: "Enabled",
+        },
         allowedtypes=HYBRID | PV | X3 | PM,
     ),
     SofarModbusSensorEntityDescription(
@@ -13511,6 +13520,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register=0x9010,
         register_data_type=REGISTER_S16,
         scale=0.1,
+        read_scale_exceptions=HYD_EP_CURRENT_SCALE_EXCEPTIONS,
         allowedtypes=BAT_BTS,
     ),
     SofarModbusSensorEntityDescription(
@@ -13633,6 +13643,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register=0x9071,
         register_data_type=REGISTER_S16,
         scale=0.1,
+        read_scale_exceptions=HYD_EP_CURRENT_SCALE_EXCEPTIONS,
         allowedtypes=BAT_BTS,
     ),
     SofarModbusSensorEntityDescription(
@@ -13658,14 +13669,28 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=BAT_BTS,
     ),
-    # SofarModbusSensorEntityDescription(
-    #     name = "Pack SOC",
-    #     key = "pack_soc",
-    #     native_unit_of_measurement = PERCENTAGE,
-    #     device_class = SensorDeviceClass.BATTERY,
-    #     register = 0x907A,
-    #     allowedtypes = BAT_BTS,
-    # ),
+    SofarModbusSensorEntityDescription(
+        name="Pack Total Voltage",
+        key="pack_total_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        register=0x9079,
+        scale=0.1,
+        suggested_display_precision=1,
+        allowedtypes=BAT_BTS | HYD_EP,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Pack SOC",
+        key="pack_soc",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        register=0x907A,
+        scale=0.1,
+        suggested_display_precision=1,
+        allowedtypes=BAT_BTS | HYD_EP,
+    ),
 ]
 
 
@@ -13706,12 +13731,54 @@ class battery_config(base_battery_config):
             await self._determine_bat_quantitys(hub)
         return self.number_strings
 
+    async def _read_selected_battery(self, hub: Any) -> int | None:
+        """Return the battery selection reported by the inverter."""
+        try:
+            inverter_data = await hub.async_read_holding_registers(
+                unit=hub._modbus_addr,
+                address=self.bms_check_address,
+                count=1,
+            )
+            if inverter_data is None:
+                _LOGGER.warning("No response from BMS selection register 0x%x", self.bms_check_address)
+                return None
+            if inverter_data.isError():
+                _LOGGER.warning("Modbus error reading BMS selection register 0x%x: %s", self.bms_check_address, inverter_data)
+                return None
+
+            return int(convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big"))  # type: ignore[attr-defined]  # DataType enum dynamic
+        except Exception:
+            _LOGGER.warning("Cannot read BMS selection register 0x%x", self.bms_check_address, exc_info=True)
+            return None
+
     async def select_battery(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> bool:
         faulty_nr = 0
         payload = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
         _LOGGER.debug("select batt-nr: %s batt-pack: %s 0x%x", batt_nr, batt_pack_nr, payload)
-        await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.bms_inquire_address, payload=payload)
+
+        selected_battery = await self._read_selected_battery(hub)
+        if selected_battery == payload:
+            self.selected_batt_nr = batt_nr
+            self.selected_batt_pack_nr = batt_pack_nr
+            return True
+
+        try:
+            await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.bms_inquire_address, payload=payload)
+        except Exception:
+            _LOGGER.warning(
+                "Cannot select batt_nr: %s, batt_pack_nr: %s via register 0x%x",
+                batt_nr,
+                batt_pack_nr,
+                self.bms_inquire_address,
+                exc_info=True,
+            )
+            return False
+
         await asyncio.sleep(0.3)
+        if await self._read_selected_battery(hub) != payload:
+            _LOGGER.warning("Inverter did not select batt_nr: %s, batt_pack_nr: %s", batt_nr, batt_pack_nr)
+            return False
+
         self.selected_batt_nr = batt_nr
         self.selected_batt_pack_nr = batt_pack_nr
         return True
@@ -13745,65 +13812,75 @@ class battery_config(base_battery_config):
         return f"BMS: V{new_data[sw_version_key]}"
 
     async def check_battery_on_start(self, hub: Any, old_data: dict[str, Any], key_prefix: str, batt_nr: int, batt_pack_nr: int) -> bool:
-        if not self.batt_pack_serials.__contains__(batt_nr):
-            return False
-        if not self.batt_pack_serials[batt_nr].__contains__(batt_pack_nr):
-            return False
-
         faulty_nr = 0
         payload = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
         for _retry in range(0, 10):
-            inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=self.bms_check_address, count=1)
-            if inverter_data is not None and not inverter_data.isError():
-                read = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")  # type: ignore[attr-defined]  # DataType enum dynamic
-                ok = read == payload
-                if not ok:
-                    await asyncio.sleep(0.3)
-                else:
-                    return True
-
-            else:
-                _LOGGER.error("can't read batt check register")
+            selected_battery = await self._read_selected_battery(hub)
+            if selected_battery == payload:
+                return True
+            if selected_battery is not None:
+                await asyncio.sleep(0.3)
+        _LOGGER.warning(
+            "BMS validation before reading failed for battery %s pack %s: register 0x%x expected 0x%04x, last selection %s",
+            batt_nr,
+            batt_pack_nr,
+            self.bms_check_address,
+            payload,
+            f"0x{selected_battery:04x}" if selected_battery is not None else "unavailable",
+        )
         return False
 
     async def check_battery_on_end(
         self, hub: Any, old_data: dict[str, Any], new_data: dict[str, Any], key_prefix: str, batt_nr: int, batt_pack_nr: int
     ) -> bool:
-        # inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=0x9045, count=2)
-        # if not inverter_data.isError():
-        #     decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
-        #     batt_time = value_function_2byte_timestamp(decoder.decode_32bit_uint(), None, None)
-        #     _LOGGER.info(f"batt time: {batt_time}")
-
+        """Reject unverified pack data without turning a validation failure into a poll exception."""
         faulty_nr = 0
         compare_value = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
-        inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=self.bms_check_address, count=1)
-        if not inverter_data.isError():
-            if inverter_data is not None and not inverter_data.isError():
-                new_value = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")  # type: ignore[attr-defined]  # DataType enum dynamic
-                _LOGGER.debug("check_battery_on_end: 0x%x 0x%x", new_value, compare_value)
-            if new_value == compare_value:
-                serial_key = key_prefix + "pack_serial_number"
-                if not new_data.__contains__(serial_key):
-                    _LOGGER.info("batt pack serial not received %s", serial_key)
-                    return False
-                serial = new_data[serial_key]
-                _LOGGER.debug("batt pack serial: %s", serial)
-                return bool(serial == self.batt_pack_serials[batt_nr][batt_pack_nr])
-            else:
-                return False
+        selected_battery = await self._read_selected_battery(hub)
+        if selected_battery != compare_value:
+            _LOGGER.warning(
+                "BMS validation after reading failed for battery %s pack %s: register 0x%x expected 0x%04x, actual selection %s",
+                batt_nr,
+                batt_pack_nr,
+                self.bms_check_address,
+                compare_value,
+                f"0x{selected_battery:04x}" if selected_battery is not None else "unavailable",
+            )
+            return False
 
-        return False
+        serial_key = key_prefix + "pack_serial_number"
+        serial = new_data.get(serial_key)
+        if not serial:
+            _LOGGER.warning(
+                "BMS validation after reading failed for battery %s pack %s: missing serial number (%s)", batt_nr, batt_pack_nr, serial_key
+            )
+            return False
+        # Selection identifies the requested pack. A stored serial is device metadata,
+        # not a permanent validation constraint (packs can be replaced or reordered).
+        self.batt_pack_serials.setdefault(batt_nr, {})[batt_pack_nr] = serial
+        return True
 
     async def _determine_bat_quantitys(self, hub: Any) -> None:
         try:
             inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=self.bapack_number_address, count=1)
             if inverter_data is not None and not inverter_data.isError():
                 val = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")  # type: ignore[attr-defined]  # DataType enum dynamic
-                self.number_cels_in_parallel = (val >> 8) & 0xFF  # high byte
-                self.number_strings = val & 0xFF  # low byte
+                self.number_cels_in_parallel, self.number_strings = self._decode_battery_query_dimensions(hub.seriesnumber, int(val))
         except Exception:
             _LOGGER.warning("%s: attempt to read BaPack number failed at 0x%x", hub.name, self.bapack_number_address, exc_info=True)
+
+    @staticmethod
+    def _decode_battery_query_dimensions(seriesnumber: str, value: int) -> tuple[int, int]:
+        """Return the pack and battery counts used for BMS_Inquire queries."""
+        parallel_pack_count = (value >> 8) & 0xFF
+        string_count = value & 0xFF
+
+        if seriesnumber.startswith("SM2ES4"):
+            # HYD-EP reports 0x0410 for four parallel packs with 16 cells
+            # each. Its low byte is not another selectable BMS dimension.
+            return 1, parallel_pack_count
+
+        return parallel_pack_count, string_count
 
     async def init_batt_pack_serials(self, hub: Any) -> None:
         retry = 0
@@ -13816,7 +13893,8 @@ class battery_config(base_battery_config):
                     self.batt_pack_serials[batt_nr] = {}
 
                 for batt_pack_nr in range(self.number_cels_in_parallel):
-                    await self.select_battery(hub, batt_nr, batt_pack_nr)
+                    if not await self.select_battery(hub, batt_nr, batt_pack_nr):
+                        continue
                     serial = await self._determinate_batt_pack_serial(hub)
                     if self.batt_pack_serials[batt_nr].__contains__(batt_pack_nr):
                         if self.batt_pack_serials[batt_nr][batt_pack_nr] != serial:
@@ -13876,6 +13954,9 @@ class sofar_plugin(plugin_base):
         elif seriesnumber.startswith("SM2E"):
             invertertype = HYBRID | X1 | GEN  # HYDxxxxES, Not actually X3, needs changing
             self.inverter_model = "HYDxxxxES"
+            if seriesnumber.startswith("SM2ES4"):
+                invertertype |= HYD_EP
+                self.inverter_model = "HYD 3-6K-EP"
         elif seriesnumber.startswith("ZM2E"):
             invertertype = HYBRID | X1 | GEN  # HYDxxxxKTL ZCS HP, Single Phase
             self.inverter_model = "HYDxxxxKTL ZCS HP"
@@ -13939,12 +14020,13 @@ class sofar_plugin(plugin_base):
         dcbmatch = ((inverterspec & entitymask & ALL_DCB_GROUP) != 0) or (entitymask & ALL_DCB_GROUP == 0)
         pmmatch = ((inverterspec & entitymask & ALL_PM_GROUP) != 0) or (entitymask & ALL_PM_GROUP == 0)
         mpptmatch = ((inverterspec & entitymask & ALL_MPPT_GROUP) != 0) or (entitymask & ALL_MPPT_GROUP == 0)
+        modelmatch = ((inverterspec & entitymask & ALL_MODEL_GROUP) != 0) or (entitymask & ALL_MODEL_GROUP == 0)
         blacklisted = False
         if blacklist:
             for start in blacklist:
                 if serialnumber.startswith(start):
                     blacklisted = True
-        return (genmatch and xmatch and hybmatch and epsmatch and dcbmatch and pmmatch and mpptmatch) and not blacklisted
+        return (genmatch and xmatch and hybmatch and epsmatch and dcbmatch and pmmatch and mpptmatch and modelmatch) and not blacklisted
 
     def getSoftwareVersion(self, new_data: dict[str, Any]) -> str | None:
         return new_data.get("software_version", None)
