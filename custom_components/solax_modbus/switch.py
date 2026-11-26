@@ -6,6 +6,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -18,6 +19,7 @@ from .const import (
     WRITE_DATA_LOCAL,
     WRITE_MULTISINGLE_MODBUS,
     BaseModbusSwitchEntityDescription,
+    matches_active_when,
     matches_modbus_protocol,
 )
 
@@ -37,10 +39,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities = []
 
     for switch_info in plugin.SWITCH_TYPES:
-        if plugin.matchInverterWithMask(
-            hub._invertertype, switch_info.allowedtypes, hub.seriesnumber, switch_info.blacklist
-        ) and matches_modbus_protocol(hub, switch_info):
-            switch = SolaXModbusSwitch(hub_name, hub, modbus_addr, hub.device_info, switch_info)
+        if (
+            plugin.matchInverterWithMask(hub._invertertype, switch_info.allowedtypes, hub.seriesnumber, switch_info.blacklist)
+            and matches_modbus_protocol(hub, switch_info)
+            and hub.device_group_enabled(switch_info.device_group)
+        ):
+            device_info = hub.group_device_info(switch_info.device_group) if switch_info.device_group else hub.device_info
+
+            def factory(di: Any = device_info, si: Any = switch_info) -> SolaXModbusSwitch:
+                return SolaXModbusSwitch(hub_name, hub, modbus_addr, di, si)
+
+            switch = factory()
             if switch_info.value_function:
                 hub.computedSwitches[switch_info.key] = switch_info
             if switch_info.write_method == WRITE_DATA_LOCAL and switch_info.sensor_key is not None:
@@ -65,8 +74,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if dep_on != switch_info.key:
                         hub.entity_dependencies.setdefault(dep_on, []).append(switch_info.key)  # can be more than one
 
-            hub.switchEntities[switch_info.key] = switch  # Store the switch entity
-            entities.append(switch)
+            active = matches_active_when(hub, switch_info)
+            if switch_info.active_when is not None:
+                hub.register_gated_entity(switch_info, factory, async_add_entities, hub.switchEntities, "switch", switch if active else None)
+            if active:
+                hub.switchEntities[switch_info.key] = switch
+                entities.append(switch)
+            else:
+                hub.switchEntities.pop(switch_info.key, None)
 
     providers = hass.data.get(DOMAIN, {}).get("_switch_entity_providers", [])
     for provider in providers:
@@ -140,10 +155,16 @@ class SolaXModbusSwitch(SwitchEntity, RestoreEntity):
 
     async def _async_set_state(self, is_on: bool) -> None:
         """Write and publish a new state only after the write was accepted."""
-        await self._write_switch_to_modbus(is_on)
+        try:
+            await self._write_switch_to_modbus(is_on)
+        except AssertionError as err:
+            _LOGGER.warning("%s: Changing switch %s failed to update with exception {%s}", self._platform_name, self._name, err)
+            raise HomeAssistantError(f"{self._name}: Changing switch value failed. Could not update modbus registers.") from err
+
         self._attr_is_on = is_on
         self._last_command_time = datetime.now()  # Record user action time
         self.async_write_ha_state()
+        await self._hub.async_refresh_gated_entities()
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -174,10 +195,17 @@ class SolaXModbusSwitch(SwitchEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def _write_switch_to_modbus(self, is_on: bool) -> None:
+        # Determine the new switch value either with value function or default
+        if self._value_function is not None:
+            payload = self._value_function(self._bit, is_on, self._sensor_key or self._key, self._hub.data)
+        else:
+            _LOGGER.warning("No value function for switch %s. Will not make changes to modbus registers.", self._key)
+            payload = 1 if is_on else 0
+        # For local data we can simply update locally
         if self.entity_description.write_method == WRITE_DATA_LOCAL:
             if self._sensor_key is None:
                 return
-            self._hub.data[self._sensor_key] = 1 if is_on else 0
+            self._hub.data[self._sensor_key] = payload
             self._hub.localsUpdated = True
             try:
                 self._hub._hass.bus.async_fire(
@@ -192,28 +220,30 @@ class SolaXModbusSwitch(SwitchEntity, RestoreEntity):
             except Exception as ex:
                 _LOGGER.debug("%s: local switch event failed: %s", self._hub.name, ex)
             return
-        if self._value_function is None:
-            _LOGGER.debug("No value function for switch %s", self._key)
-            return
-
-        payload: int = self._value_function(self._bit, is_on, self._sensor_key, self._hub.data)
-        _LOGGER.debug(
-            "Writing %s %s to register %s with value %s method %s", self._platform_name, self._key, self._register, payload, self._write_method
-        )
-        if self._write_method == WRITE_MULTISINGLE_MODBUS:
-            await self._hub.async_write_registers_single(
-                unit=self._modbus_addr,
-                address=self._register,
-                payload=payload,
-                register_data_type=getattr(self.entity_description, "register_data_type", None),
+        # For modbus data, we only write to the physical register if there was a
+        # real value function to prevent causing unexpected side-effects. User was
+        # warned about missing value function.
+        if self._value_function is not None:
+            _LOGGER.debug(
+                "Writing %s %s to register %s with value %s method %s", self._platform_name, self._key, self._register, payload, self._write_method
             )
-        else:
-            await self._hub.async_write_register(
-                unit=self._modbus_addr,
-                address=self._register,
-                payload=payload,
-                register_data_type=getattr(self.entity_description, "register_data_type", None),
-            )
+            if self._write_method == WRITE_MULTISINGLE_MODBUS:
+                await self._hub.async_write_registers_single(
+                    unit=self._modbus_addr,
+                    address=self._register,
+                    payload=payload,
+                    register_data_type=getattr(self.entity_description, "register_data_type", None),
+                )
+            else:
+                await self._hub.async_write_register(
+                    unit=self._modbus_addr,
+                    address=self._register,
+                    payload=payload,
+                    register_data_type=getattr(self.entity_description, "register_data_type", None),
+                )
+        # Publish the accepted value locally: the readback register only catches up
+        # on a later poll, and entities depending on this key must not see the old value.
+        self._hub.data[self._sensor_key or self._key] = payload
 
     @property
     def is_on(self) -> bool | None:

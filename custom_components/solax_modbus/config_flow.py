@@ -32,9 +32,11 @@ from homeassistant.helpers.schema_config_entry_flow import (
 )
 
 from .connection import (
+    effective_entry_config,
     matching_config_entries,
 )
 from .const import (
+    CONF_AUTOREPEAT_INPUT_GRACE,
     CONF_BAUDRATE,
     CONF_CORE_HUB,
     CONF_ENERGY_DASHBOARD_DEVICE,
@@ -42,28 +44,39 @@ from .const import (
     CONF_INVERTER_NAME_SUFFIX,
     CONF_INVERTER_POWER_KW,
     CONF_MODBUS_ADDR,
+    CONF_MODBUS_REQUEST_SUMMARY_INTERVAL,
+    CONF_MODBUS_REQUEST_SUMMARY_RETRIES_ONLY,
     CONF_PLUGIN,
     CONF_READ_BATTERY,
+    CONF_READ_DATAHUB,
     CONF_READ_DCB,
+    CONF_READ_EMS,
     CONF_READ_EPS,
+    CONF_READ_GEN,
     CONF_READ_PM,
     CONF_SCAN_INTERVAL_FAST,
     CONF_SCAN_INTERVAL_MEDIUM,
     CONF_SERIAL_PORT,
     CONF_TCP_TYPE,
     CONF_TIME_OUT,
+    DEFAULT_AUTOREPEAT_INPUT_GRACE,
     DEFAULT_BAUDRATE,
     DEFAULT_ENERGY_DASHBOARD_DEVICE,
     # PLUGIN_PATH_OLDSTYLE,
     DEFAULT_INVERTER_NAME_SUFFIX,
     DEFAULT_INVERTER_POWER_KW,
     DEFAULT_MODBUS_ADDR,
+    DEFAULT_MODBUS_REQUEST_SUMMARY_INTERVAL,
+    DEFAULT_MODBUS_REQUEST_SUMMARY_RETRIES_ONLY,
     DEFAULT_NAME,
     DEFAULT_PLUGIN,
     DEFAULT_PORT,
     DEFAULT_READ_BATTERY,
+    DEFAULT_READ_DATAHUB,
     DEFAULT_READ_DCB,
+    DEFAULT_READ_EMS,
     DEFAULT_READ_EPS,
+    DEFAULT_READ_GEN,
     DEFAULT_READ_PM,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SERIAL_PORT,
@@ -72,6 +85,7 @@ from .const import (
     DOMAIN,
     PLUGIN_PATH,
 )
+from .core_modbus import supports_core_units
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,17 +144,18 @@ PLUGINS = [selector.SelectOptionDict(value=getPluginName(i), label=getPluginName
 
 
 INTERFACES = [
-    selector.SelectOptionDict(value="tcp", label="TCP / Ethernet"),
-    selector.SelectOptionDict(value="serial", label="Serial"),
-    selector.SelectOptionDict(value="core", label="Hass core Hub"),
+    selector.SelectOptionDict(value="core_tcp" if supports_core_units() else "tcp", label="TCP / Ethernet"),
+    selector.SelectOptionDict(value="core_serial" if supports_core_units() else "serial", label="Serial"),
 ]
+
+LEGACY_INTERFACE = selector.SelectOptionDict(value="core", label="Hass core Hub (legacy YAML; API removed in HA 2027.10)")
 
 # Removed - using boolean checkbox instead
 
 CONFIG_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
-        vol.Required(CONF_INTERFACE, default="tcp"): selector.SelectSelector(
+        vol.Required(CONF_INTERFACE, default="core_tcp" if supports_core_units() else "tcp"): selector.SelectSelector(
             selector.SelectSelectorConfig(options=INTERFACES),
         ),
         vol.Required(CONF_MODBUS_ADDR, default=DEFAULT_MODBUS_ADDR): int,
@@ -155,14 +170,22 @@ CONFIG_SCHEMA = vol.Schema(
         vol.Optional(CONF_ENERGY_DASHBOARD_DEVICE, default=DEFAULT_ENERGY_DASHBOARD_DEVICE): bool,
         vol.Optional(CONF_READ_EPS, default=DEFAULT_READ_EPS): bool,
         vol.Optional(CONF_READ_DCB, default=DEFAULT_READ_DCB): bool,
+        vol.Optional(CONF_READ_GEN, default=DEFAULT_READ_GEN): bool,
         vol.Optional(CONF_READ_PM, default=DEFAULT_READ_PM): bool,
+        vol.Optional(CONF_READ_EMS, default=DEFAULT_READ_EMS): bool,
+        vol.Optional(CONF_READ_DATAHUB, default=DEFAULT_READ_DATAHUB): bool,
         vol.Optional(CONF_TIME_OUT, default=DEFAULT_TIME_OUT): int,
+        vol.Optional(CONF_MODBUS_REQUEST_SUMMARY_INTERVAL, default=DEFAULT_MODBUS_REQUEST_SUMMARY_INTERVAL): vol.All(
+            vol.Coerce(int), vol.Range(min=0)
+        ),
+        vol.Optional(CONF_MODBUS_REQUEST_SUMMARY_RETRIES_ONLY, default=DEFAULT_MODBUS_REQUEST_SUMMARY_RETRIES_ONLY): bool,
+        vol.Optional(CONF_AUTOREPEAT_INPUT_GRACE, default=DEFAULT_AUTOREPEAT_INPUT_GRACE): cv.positive_int,
     }
 )
 
 OPTION_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_INTERFACE, default="tcp"): selector.SelectSelector(
+        vol.Required(CONF_INTERFACE, default="core_tcp" if supports_core_units() else "tcp"): selector.SelectSelector(
             selector.SelectSelectorConfig(options=INTERFACES),
         ),
         vol.Required(CONF_MODBUS_ADDR, default=DEFAULT_MODBUS_ADDR): int,
@@ -177,8 +200,16 @@ OPTION_SCHEMA = vol.Schema(
         vol.Optional(CONF_ENERGY_DASHBOARD_DEVICE, default=DEFAULT_ENERGY_DASHBOARD_DEVICE): bool,
         vol.Optional(CONF_READ_EPS, default=DEFAULT_READ_EPS): bool,
         vol.Optional(CONF_READ_DCB, default=DEFAULT_READ_DCB): bool,
+        vol.Optional(CONF_READ_GEN, default=DEFAULT_READ_GEN): bool,
         vol.Optional(CONF_READ_PM, default=DEFAULT_READ_PM): bool,
+        vol.Optional(CONF_READ_EMS, default=DEFAULT_READ_EMS): bool,
+        vol.Optional(CONF_READ_DATAHUB, default=DEFAULT_READ_DATAHUB): bool,
         vol.Optional(CONF_TIME_OUT, default=DEFAULT_TIME_OUT): int,
+        vol.Optional(CONF_MODBUS_REQUEST_SUMMARY_INTERVAL, default=DEFAULT_MODBUS_REQUEST_SUMMARY_INTERVAL): vol.All(
+            vol.Coerce(int), vol.Range(min=0)
+        ),
+        vol.Optional(CONF_MODBUS_REQUEST_SUMMARY_RETRIES_ONLY, default=DEFAULT_MODBUS_REQUEST_SUMMARY_RETRIES_ONLY): bool,
+        vol.Optional(CONF_AUTOREPEAT_INPUT_GRACE, default=DEFAULT_AUTOREPEAT_INPUT_GRACE): cv.positive_int,
     }
 )
 
@@ -193,9 +224,19 @@ SERIAL_SCHEMA = vol.Schema(
     }
 )
 
+CORE_SERIAL_SCHEMA = SERIAL_SCHEMA.extend(
+    {
+        vol.Optional("parity", default="N"): selector.SelectSelector(selector.SelectSelectorConfig(options=["N", "E", "O"])),
+        vol.Optional("bytesize", default=8): vol.In((7, 8)),
+        vol.Optional("stopbits", default=1): vol.In((1, 2)),
+        vol.Optional("method", default="rtu"): selector.SelectSelector(selector.SelectSelectorConfig(options=["rtu", "ascii"])),
+    }
+)
+
 TCP_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
+        vol.Optional("message_wait_milliseconds", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=1000)),
         vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
         vol.Required(CONF_TCP_TYPE, default=DEFAULT_TCP_TYPE): selector.SelectSelector(
             selector.SelectSelectorConfig(options=TCP_TYPES),
@@ -219,6 +260,7 @@ BATTERY_SCHEMA = vol.Schema(
 
 
 async def _validate_base(handler: SchemaCommonFlowHandler, user_input: dict[str, Any]) -> dict[str, Any]:
+    await _validate_interface(handler, user_input)
     _LOGGER.info("validating base: %s", user_input)
     """Validate config."""
     user_input[CONF_INTERFACE]
@@ -245,6 +287,22 @@ async def _validate_base(handler: SchemaCommonFlowHandler, user_input: dict[str,
     if normalized_name in _configured_hub_names(handler):
         raise SchemaFlowError("name_already_used")
 
+    return user_input
+
+
+def _legacy_core_selected(handler: SchemaCommonFlowHandler) -> bool:
+    """Only the persisted entry may retain legacy YAML hub access."""
+    try:
+        entry = getattr(handler.parent_handler, "config_entry", None)
+    except ValueError:
+        return False
+    return entry is not None and effective_entry_config(entry).get(CONF_INTERFACE) == "core"
+
+
+async def _validate_interface(handler: SchemaCommonFlowHandler, user_input: dict[str, Any]) -> dict[str, Any]:
+    """Do not allow a new entry or another interface to opt into legacy access."""
+    if user_input.get(CONF_INTERFACE) == "core" and not _legacy_core_selected(handler):
+        raise SchemaFlowError("legacy_hub_unavailable")
     return user_input
 
 
@@ -279,6 +337,13 @@ async def _validate_core_modbus_hub(handler: SchemaCommonFlowHandler, user_input
         raise SchemaFlowError(f"invalid core modbus hub name: '{hub_name}'") from e
     if not res:
         raise SchemaFlowError("core modbus hub name empty")
+    return user_input
+
+
+async def _validate_core_serial(handler: SchemaCommonFlowHandler, user_input: Any) -> Any:
+    """Expose supported per-pack configuration for a new shared serial link."""
+    plugin = await handler.parent_handler.hass.async_add_executor_job(_load_plugin, handler.options[CONF_PLUGIN])
+    user_input["support-battery"] = plugin.plugin_instance.BATTERY_CONFIG is not None
     return user_input
 
 
@@ -320,6 +385,81 @@ async def _duplicate_inverter_schema(handler: SchemaCommonFlowHandler) -> vol.Sc
     return vol.Schema({})
 
 
+ENTITY_TYPE_ATTRIBUTES = ("SENSOR_TYPES", "NUMBER_TYPES", "SELECT_TYPES", "SWITCH_TYPES", "TIME_TYPES", "BUTTON_TYPES")
+
+
+def _plugin_uses_feature_flag(plugin_name: str | None, flag_name: str) -> bool:
+    """Return whether a plugin declares any entity gated by the named allowedtypes flag."""
+    if not plugin_name:
+        return True
+    try:
+        plugin = _load_plugin(plugin_name)
+    except Exception:
+        return True
+    flag = getattr(plugin, flag_name, None)
+    if not isinstance(flag, int) or not flag:
+        return False
+    instance = getattr(plugin, "plugin_instance", plugin)
+    for attribute in ENTITY_TYPE_ATTRIBUTES:
+        for source in (instance, plugin):
+            for description in getattr(source, attribute, None) or []:
+                if getattr(description, "allowedtypes", 0) & flag:
+                    return True
+    return False
+
+
+def _plugin_supports_energy_dashboard(plugin_name: str | None) -> bool:
+    """Return whether a plugin provides Energy Dashboard mappings."""
+    if not plugin_name:
+        return True
+    try:
+        plugin = _load_plugin(plugin_name)
+    except Exception:
+        return True
+    instance = getattr(plugin, "plugin_instance", plugin)
+    return getattr(instance, "ENERGY_DASHBOARD_MAPPING", None) is not None or getattr(plugin, "ENERGY_DASHBOARD_MAPPING", None) is not None
+
+
+def _plugin_supports_device_group(plugin_name: str | None, group: str) -> bool:
+    """Return whether a plugin declares any entity belonging to a named device group."""
+    if not plugin_name:
+        return True
+    try:
+        plugin = _load_plugin(plugin_name)
+    except Exception:
+        return True
+    instance = getattr(plugin, "plugin_instance", plugin)
+    for attribute in ("NUMBER_TYPES", "SELECT_TYPES", "SWITCH_TYPES", "TIME_TYPES", "BUTTON_TYPES", "SENSOR_TYPES"):
+        for source in (instance, plugin):
+            for description in getattr(source, attribute, None) or []:
+                if getattr(description, "device_group", None) == group:
+                    return True
+    return False
+
+
+async def _option_schema(handler: SchemaCommonFlowHandler) -> vol.Schema:
+    """Options schema without the feature switches the selected plugin does not implement."""
+    plugin_name = handler.options.get(CONF_PLUGIN)
+    hidden: set[str] = set()
+    for option, group in ((CONF_READ_DCB, "dry_contact"), (CONF_READ_GEN, "external_generator")):
+        if not _plugin_supports_device_group(plugin_name, group):
+            hidden.add(option)
+    if not _plugin_supports_energy_dashboard(plugin_name):
+        hidden.add(CONF_ENERGY_DASHBOARD_DEVICE)
+    for option, flag_name in ((CONF_READ_EPS, "EPS"), (CONF_READ_PM, "PM")):
+        if not _plugin_uses_feature_flag(plugin_name, flag_name):
+            hidden.add(option)
+    if not _plugin_supports_device_group(plugin_name, "ems"):
+        hidden.add(CONF_READ_EMS)
+    if not _plugin_supports_device_group(plugin_name, "datahub"):
+        hidden.add(CONF_READ_DATAHUB)
+    schema = {marker: value for marker, value in OPTION_SCHEMA.schema.items() if getattr(marker, "schema", None) not in hidden}
+    if _legacy_core_selected(handler):
+        interface = next(marker for marker in schema if getattr(marker, "schema", None) == CONF_INTERFACE)
+        schema[interface] = selector.SelectSelector(selector.SelectSelectorConfig(options=[*INTERFACES, LEGACY_INTERFACE]))
+    return vol.Schema(schema)
+
+
 def _load_plugin(plugin_name: str) -> ModuleType:
     _LOGGER.info("trying to load plugin - plugin_name: %s", plugin_name)
     plugin = importlib.import_module(f".plugin_{plugin_name}", "custom_components.solax_modbus")
@@ -335,14 +475,18 @@ if (MAJOR_VERSION >= 2023) or ((MAJOR_VERSION == 2022) and (MINOR_VERSION >= 12)
         "serial": SchemaFlowFormStep(SERIAL_SCHEMA, next_step=_next_step_battery),
         "tcp": SchemaFlowFormStep(TCP_SCHEMA, validate_user_input=_validate_host, next_step=_next_step_battery),
         "core": SchemaFlowFormStep(CORE_SCHEMA, validate_user_input=_validate_core_modbus_hub, next_step=_next_step_battery),
+        "core_tcp": SchemaFlowFormStep(TCP_SCHEMA, validate_user_input=_validate_host, next_step=_next_step_battery),
+        "core_serial": SchemaFlowFormStep(CORE_SERIAL_SCHEMA, validate_user_input=_validate_core_serial, next_step=_next_step_battery),
         "battery": SchemaFlowFormStep(BATTERY_SCHEMA, next_step="duplicate_inverter"),
         "duplicate_inverter": SchemaFlowFormStep(_duplicate_inverter_schema),
     }
     OPTIONS_FLOW: dict[str, SchemaFlowFormStep | SchemaFlowMenuStep] = {
-        "init": SchemaFlowFormStep(OPTION_SCHEMA, next_step=_next_step_modbus),
+        "init": SchemaFlowFormStep(_option_schema, validate_user_input=_validate_interface, next_step=_next_step_modbus),
         "serial": SchemaFlowFormStep(SERIAL_SCHEMA, next_step=_next_step_battery),
         "tcp": SchemaFlowFormStep(TCP_SCHEMA, validate_user_input=_validate_host, next_step=_next_step_battery),
         "core": SchemaFlowFormStep(CORE_SCHEMA, validate_user_input=_validate_core_modbus_hub, next_step=_next_step_battery),
+        "core_tcp": SchemaFlowFormStep(TCP_SCHEMA, validate_user_input=_validate_host, next_step=_next_step_battery),
+        "core_serial": SchemaFlowFormStep(CORE_SERIAL_SCHEMA, validate_user_input=_validate_core_serial, next_step=_next_step_battery),
         "battery": SchemaFlowFormStep(BATTERY_SCHEMA, next_step="duplicate_inverter"),
         "duplicate_inverter": SchemaFlowFormStep(_duplicate_inverter_schema),
     }

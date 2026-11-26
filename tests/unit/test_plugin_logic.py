@@ -76,21 +76,12 @@ def test_match_inverter_with_mask_eps() -> None:
 
 
 @pytest.mark.asyncio
-async def test_determine_inverter_type_solax(mock_hub: Any) -> None:
-    # Test detection logic using MockHub
-
-    # Simulate a Gen4 X3 Hybrid serial number: H34T...
-    # H = 0x48, 3 = 0x33, 4 = 0x34, T = 0x54
-    # Serial is read as 7 registers (14 chars) usually
-    # Let's mock the response for address 0 (or wherever it reads)
-    # Solax plugin reads from 0x0 -> count 7
-
-    # "H34T10H..." ->
-    # Reg 0: 'H3' = 0x4833
-    # Reg 1: '4T' = 0x3454
-    # ...
-
-    mock_registers = [0x4833, 0x3454, 0x3130, 0x4831, 0x3233, 0x3435, 0x3637]
+@pytest.mark.parametrize("serial_number", ["H34T10H1234567", "N34A10K1234567"])
+async def test_determine_inverter_type_solax(mock_hub: Any, serial_number: str) -> None:
+    # Exercise the Gen4 X3 detection path for both SolaX and Nord OEM prefixes.
+    # Modbus exposes the 14-character serial as seven big-endian 16-bit registers.
+    serial_bytes = serial_number.encode("ascii")
+    mock_registers = [int.from_bytes(serial_bytes[index : index + 2], "big") for index in range(0, 14, 2)]
     mock_hub.configure_read(1, 0, 7, type("MockResponse", (), {"registers": mock_registers, "isError": lambda: False}))
 
     # Config dict
@@ -99,22 +90,15 @@ async def test_determine_inverter_type_solax(mock_hub: Any) -> None:
     # Run detection
     inverter_type = await solax_plugin.async_determineInverterType(mock_hub, config)
 
-    # H34T should match: HYBRID | X3 | GEN4
     expected = HYBRID | X3 | GEN4
 
-    # Note: The exact return value depends on the implementation in plugin_solax.py
-    # Let's check what H34T maps to in the code...
-    # It maps to: HYBRID | X3 | GEN4
-
     assert inverter_type == expected
+    assert mock_hub.inverter_model == "X3-Hybrid-10kW"
 
 
-def test_parallel_master_scales_import_limit(mock_hub: Any) -> None:
+def test_parallel_master_scales_active_power(mock_hub: Any) -> None:
     """
-    Verify parallel Master inverters scale remotecontrol_import_limit.
-
-    Bug: remotecontrol_import_limit stayed at 30kW for 3×15kW (45kW) systems
-    because it wasn't included in the parallel Master scaling logic.
+    Verify parallel Master inverters retain their active-power limits.
     """
     from dataclasses import dataclass
 
@@ -137,14 +121,15 @@ def test_parallel_master_scales_import_limit(mock_hub: Any) -> None:
             self._attr_native_max_value = 30000  # Bug: stuck at default
             self.entity_description = MockEntityDescription(native_min_value=0, native_max_value=30000)
 
-    mock_hub.numberEntities = {"remotecontrol_import_limit": MockEntity()}
+    mock_hub.numberEntities = {"remotecontrol_active_power": MockEntity()}
     mock_hub.sensorEntities = {}
 
     # Execute: Trigger the callback
     plugin_instance.localDataCallback(mock_hub)
 
-    # Assert: Import limit should scale to 45kW
-    entity = mock_hub.numberEntities["remotecontrol_import_limit"]
+    # Assert: Active power should scale to ±45kW, independently of import limit.
+    entity = mock_hub.numberEntities["remotecontrol_active_power"]
+    assert entity._attr_native_min_value == -45000
     assert entity._attr_native_max_value == 45000, (
-        f"Parallel Master with 45kW capacity should scale import limit to 45000W, got {entity._attr_native_max_value}W"
+        f"Parallel Master with 45kW capacity should scale active power to 45000W, got {entity._attr_native_max_value}W"
     )

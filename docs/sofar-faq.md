@@ -4,6 +4,24 @@
 
 Have you double checked that the termination resistor is installed on both ends? On the adaptor side make sure that it has a termination resistor in the adaptor (check the adaptor's manual or measure it). If this is missing add a 120 Ohm resistor between A and B to properly terminate the adaptor side. On the inverter side Sofar inverters also require a termination on the last connected inverter. Note that on the COM Port the PINs 1 and 2 (A+) and PINs 3 and 4 (B-) are internally connected with each other. So if your signal cable is connected to PINs 1 and 4 you can use the PINs 2 and 3 to connect your termination resistor.
 
+## Log is flooded with "Inverter did not select batt_nr"
+
+With battery pack reading enabled you may see thousands of warnings per day such as
+`Inverter did not select batt_nr: 0, batt_pack_nr: 0`, often together with
+`device group validation failed; discarding this device group's snapshot` or
+`BMS validation after reading failed`. Pack sensors update only occasionally, and
+pack serial numbers may appear to swap between packs.
+
+The integration selects a pack by writing `0x9020` and confirms the selection by reading `0x9044`.
+If your RS485 to Ethernet adaptor runs as a *storage* (caching) Modbus gateway — e.g. Waveshare
+RS485 TO ETH (B) with "Auto query storage type" — the confirmation read is answered from the
+adaptor's cache and still shows the previous selection, although the inverter has already switched.
+
+Set the adaptor to a non-caching mode (Waveshare: "Multi-host non-storage type") and restart it.
+On a HYD-3PH (HYDxxKTL-3P, firmware V110062) with 7 battery modules (BMS V20008) this changed
+~1,700 warnings per hour to none, and all packs update at the same rate again. Measured with a
+read-only poller, the inverter itself switches packs within 0.1–0.3 s.
+
 ## RS485 communication stops after a few hours
 
 There was an issue in recent firmware versions (introduced at around V110000) that cause the firmware communication to fail after a few hours. Install a newer firmware of at least version V110051.
@@ -54,3 +72,24 @@ In general we recommend using the working mode 'Transparency' or use a RS-485 Mo
 The Sofar Hybrid inverters have several registers that cannot be written on their own. These need to be written in batch of several registers. The integration for Sofar therefore provides several buttons that trigger the write actions to the inverter. For example after changing "Passive: Desired Grid Power", "Passive: Maximum Battery Power", or "Passive: Minimum Battery Power" you have to press "Passive: Update Battery Charge/Discharge" to commit the changed values to the inverter.
 
 Please see the [entity documentation](sofar-entity-description.md) for more information.
+
+## TCP requests frequently time out, but retries succeed
+
+Some inverter/adapter combinations need a quiet interval between Modbus requests.
+In the integration's configuration options, select **TCP / Ethernet** and set
+**Message spacing (ms)** to **150** as a starting point. The default is **0**;
+leave it unchanged if communication is reliable. This is separate from the
+request timeout and polling interval, and slows both polling and writes.
+
+In one isolated Sofar TCP read-only A/B/A/B comparison, each phase contained six
+reads. Both phases without spacing needed five retries; both phases with a
+150 ms gap completed without retries. This identifies a pacing workaround for
+that connection, not whether the inverter or the TCP/RS485 adapter caused the
+missing responses. It is not a universal Sofar timing requirement.
+
+On older HA versions the native client waits after a request completes, including
+failed requests, before starting the next read or write. Its internal retries are
+unchanged. On HA 2026.10 or later the setting is passed to Home Assistant's shared
+Modbus unit API. Other clients accessing the same inverter or adapter are not
+controlled by this setting. Legacy YAML hub connections retain their existing
+hub configuration.

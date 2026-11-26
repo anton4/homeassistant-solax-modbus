@@ -12,6 +12,8 @@ SolaX products (TODO - find out which, maybe only gen4?) provide a "firmware ver
 
 If you can read values, but unable to adjust select / number you need to change the select "Lock State" from "Locked" to "Unlocked". Might need performing again following a full Power Cycle.
 
+X3-MIC Gen1 does not expose a readable lock-state register. Use the "Unlock Advanced Settings" button before changing settings. This writes the required advanced unlock value (`6868`) without attempting to read back a lock state. Use "Lock Settings" to lock the settings again.
+
 ![Image of SolaX Lock State](images/solax-lock-state.png)
 
 ## How to connect PocketWiFi 3.0 to my Wi-Fi network?
@@ -60,4 +62,12 @@ When finishing remote control (setting mode to Disabled) when the battery SoC is
 
 As a workaround, the "Battery Charge Upper SOC" entity (`number.solax_battery_charge_upper_soc`) can be used to limit the SoC of the battery. Setting this to 97% prevents the undesirable behaviour at the expense of stopping the battery reaching full charge outside the remote control session.
 
+## I have a hardware power meter measuring the house_load. Can it replace the built-in house load measurement?
 
+If the external house_load power meter has a sensor entity in HA, you can select it as the source for this integration's house_load and house_load_alt entities.
+House load is used in the VPP autorepeat loops to adapt the required power in the submodes.
+To activate your external sensor, use the `External House Load Source` entity (a dropdown menu) and select the appropriate power meter entity (typically W, or kW).
+From now on, house_load and house_load_alt will show the power value measured by this external device.
+The VPP autorepeat loop has a configurable smoothing filter to avoid oscillations when load or PV changes. This smoothing filter by default delays changes gradually over 5 polling intervals.
+If the external house_load sensor is active, oscillations are much less likely, so the `Remotecontrol Filter Smoothing Factor (mode 8/9)` entity can be set to 1 instead of the default 5. This will make the system respond faster.
+This has been tested with a low-cost Shelly 3EM-63 (W or T) device. This device has the advantage that it does not take any space on the DIN distribution rail. It simply sits under/above a circuit breaker.
